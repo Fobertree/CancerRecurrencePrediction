@@ -1,0 +1,7 @@
+.venv/
+test.*
+
+# not adding .vscode to .gitignore because of extrapaths
+
+# wsi
+*.tiff
