@@ -1,7 +1,21 @@
 import numpy as np
 import os
 import tifffile as tiff
+import itertools
 
+import openslide
+import cv2
+from PIL import Image
+import logging
+from tqdm import tqdm
+
+# logger
+logger = logging.Logger("wsi")
+file_handler = logging.FileHandler("Logs/wsi.log", mode='a')
+file_handler.setLevel(logging.ERROR)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 '''
 Preprocessing:
@@ -9,7 +23,7 @@ Preprocessing:
 - Find way to standardize image into tensor: TODO @aliu
 '''
 
-def load_images(directory_path : str, threshold : int | None = None):
+def load_images(directory_path : str, threshold : int | None = None) -> list[np.array]:
     cnt = 0
     res = []
     for dirname, _, filenames in os.walk(directory_path):
@@ -22,3 +36,122 @@ def load_images(directory_path : str, threshold : int | None = None):
                 return res
     
     return res
+
+def load_wsi(directory_path: str, threshold: int | None = None):
+    '''
+    Loads (up to threshold) wsi from path and samples random patches
+    
+    We call this in pre-processing
+    - Take the output of this function and generate a graph from it to pass into GNN blocks
+    '''
+    os.makedirs("dinov2_patches", exist_ok=True)
+    res = []
+    
+    # process at most threshold images
+    for dirname, _, filenames in tqdm(itertools.slice(os.walk(directory_path), threshold)):
+        for filename in filenames:
+            slide_path = os.path.join(dirname, filename)
+            
+            try:
+                slide = openslide.OpenSlide(slide_path)
+                wsi_patches = sample_random_wsi_patches(slide)
+                res.append(wsi_patches)
+
+            except openslide.OpenSlideError as e:
+                print(f"Error opening or processing slide")
+                logger.error(f"OPENSLIDE OpenSlideError ERROR::load_wsi: slide path: {slide_path}")
+                continue
+            except FileNotFoundError:
+                print(f"Error: WSI file not found at {slide_path}")
+                logger.error(f"OPENSLIDE FileNotFound ERROR::load_wsi: slide path: {slide_path}")
+                continue
+
+            slide.close()
+    
+    return res
+
+'''
+I got the below code from Gemini, I will keep this for now until we can build something better
+
+I think the WSI preprocessing is the biggest point of improvement for us but also arguably the most complex
+- I think it's best to build out the rest of the model architecture then improve this WSI to graph feature generation as much as possible
+'''
+
+def sample_random_wsi_patches(
+        slide,
+        output_dir="dinov2_patches",
+        patch_size=256,
+        num_patches=100,
+        magnification=20,
+        tissue_threshold=0.8
+    ):
+    res = []
+    # Find the best level for the target magnification
+    try:
+        # MPP: microns per pixel
+        level = slide.get_best_level_for_downsample(
+            slide.properties[openslide.PROPERTY_NAME_MPP_X] * (magnification / 20)
+        )
+    except KeyError:
+        print("Warning: Could not determine best level from MPP. Using slide level 1.")
+        level = 1
+
+    downsample = int(slide.level_downsamples[level])
+    level_dims = slide.level_dimensions[level]
+
+    # Use a low-resolution thumbnail to create a tissue mask
+    thumbnail = slide.get_thumbnail((level_dims[0], level_dims[1]))
+    thumbnail_np = np.array(thumbnail.convert("RGB"))
+    thumbnail_hsv = cv2.cvtColor(thumbnail_np, cv2.COLOR_RGB2HSV)
+
+    # Threshold the thumbnail image to find tissue regions
+    h, s, v = cv2.split(thumbnail_hsv)
+    _, tissue_mask = cv2.threshold(s, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Find the coordinates of valid (non-background) tissue regions
+    tissue_coords = np.argwhere(tissue_mask > 0)
+    if not tissue_coords.any():
+        print("No tissue found in the slide. Aborting.")
+        return
+
+    # Sample random patch locations within the tissue region
+    patch_count = 0
+    while patch_count < num_patches:
+        # Pick a random point from the tissue coordinates
+        random_index = np.random.randint(len(tissue_coords))
+        thumb_y, thumb_x = tissue_coords[random_index]
+
+        # Scale coordinates to the full resolution
+        x_origin = int(thumb_x * downsample)
+        y_origin = int(thumb_y * downsample)
+
+        # Read the patch from the WSI
+        patch_pil = slide.read_region(
+            (x_origin, y_origin), level, (patch_size, patch_size)
+        )
+        patch_np = np.array(patch_pil.convert("RGB"))
+
+        # Optional: Further filter patches to ensure sufficient tissue content
+        patch_hsv = cv2.cvtColor(patch_np, cv2.COLOR_RGB2HSV)
+        s_patch = cv2.split(patch_hsv)[1]
+        
+        # Calculate tissue percentage
+        tissue_pixels = np.sum(s_patch > 0)
+        total_pixels = s_patch.size
+        tissue_percentage = tissue_pixels / total_pixels
+        
+        # Save the patch if it meets the tissue threshold
+        if tissue_percentage > tissue_threshold:
+            img_numpy = np.array(patch_pil)
+            res.append(img_numpy)
+            patch_filename = f"patch_{patch_count:04d}_{x_origin}_{y_origin}.png"
+            patch_pil.save(os.path.join(output_dir, patch_filename))
+            patch_count += 1
+            if patch_count % 10 == 0:
+                print(f"Extracted {patch_count} patches...")
+    
+    return res
+
+
+if __name__ == "__main__":
+    logger.info("hello")

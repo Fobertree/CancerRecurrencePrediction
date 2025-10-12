@@ -1,3 +1,7 @@
 numpy
 torch
 tifffile
+torch_geometric
+openslide-python
+opencv-python
+openslide-bin
