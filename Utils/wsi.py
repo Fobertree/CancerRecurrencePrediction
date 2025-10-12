@@ -26,6 +26,7 @@ Preprocessing:
 def load_images(directory_path : str, threshold : int | None = None) -> list[np.array]:
     cnt = 0
     res = []
+    # TODO @thomas: load labels in this as well
     for dirname, _, filenames in os.walk(directory_path):
         for filename in filenames:
             f_path = os.path.join(dirname, filename)
@@ -46,6 +47,7 @@ def load_wsi(directory_path: str, threshold: int | None = None):
     '''
     os.makedirs("dinov2_patches", exist_ok=True)
     res = []
+    # TODO @thomas: match the logic of this to the dataset structure
     
     # process at most threshold images
     for dirname, _, filenames in tqdm(itertools.slice(os.walk(directory_path), threshold)):
@@ -54,8 +56,9 @@ def load_wsi(directory_path: str, threshold: int | None = None):
             
             try:
                 slide = openslide.OpenSlide(slide_path)
-                wsi_patches = sample_random_wsi_patches(slide)
-                res.append(wsi_patches)
+                # corners for kd-tree -- spatial similarity
+                wsi_patches, corners = sample_random_wsi_patches(slide)
+                res.append((wsi_patches, corners))
 
             except openslide.OpenSlideError as e:
                 print(f"Error opening or processing slide")
@@ -78,7 +81,7 @@ I think the WSI preprocessing is the biggest point of improvement for us but als
 '''
 
 def sample_random_wsi_patches(
-        slide,
+        slide : openslide.OpenSlide,
         output_dir="dinov2_patches",
         patch_size=256,
         num_patches=100,
@@ -86,6 +89,7 @@ def sample_random_wsi_patches(
         tissue_threshold=0.8
     ):
     res = []
+    up_left_corners = []
     # Find the best level for the target magnification
     try:
         # MPP: microns per pixel
@@ -121,7 +125,7 @@ def sample_random_wsi_patches(
         random_index = np.random.randint(len(tissue_coords))
         thumb_y, thumb_x = tissue_coords[random_index]
 
-        # Scale coordinates to the full resolution
+        # Scale (upper-left) coordinates to the full resolution
         x_origin = int(thumb_x * downsample)
         y_origin = int(thumb_y * downsample)
 
@@ -144,13 +148,14 @@ def sample_random_wsi_patches(
         if tissue_percentage > tissue_threshold:
             img_numpy = np.array(patch_pil)
             res.append(img_numpy)
+            up_left_corners.append((x_origin, y_origin))
             patch_filename = f"patch_{patch_count:04d}_{x_origin}_{y_origin}.png"
             patch_pil.save(os.path.join(output_dir, patch_filename))
             patch_count += 1
             if patch_count % 10 == 0:
                 print(f"Extracted {patch_count} patches...")
     
-    return res
+    return res, up_left_corners
 
 
 if __name__ == "__main__":
