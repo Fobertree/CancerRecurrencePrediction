@@ -4,8 +4,6 @@ import numpy as np
 from torch_geometric.data import Data
 
 from scipy.spatial import KDTree
-import torchvision.models as models
-import torchvision.transforms as T
 from sklearn.metrics.pairwise import cosine_similarity
 
 from wsi import load_wsi # load as np arrays
@@ -24,16 +22,22 @@ def load_patches(path: str):
     processed_patches = []
 
     # build graphs
-    for wsi_patches in loaded_wsi_patches:
-        patch_to_graph(wsi_patches, corners=corners)
+    for single_wsi_patches in loaded_wsi_patches:
+        data_spat, data_sem = patch_to_graph(single_wsi_patches, patch_corners=corners)
         
     
     # segmentation + embedding
 
     pass
 
-def patch_to_graph(wsi_patches: list[np.ndarray | torch.Tensor], corners):
+def patch_to_graph(wsi_patches: list[np.ndarray | torch.Tensor], 
+                   patch_corners: list[tuple[float,float]],
+                   slide_label: int,
+                   spatial_radius: float = 512, # pixel radius
+                   sim_threshold: float = 0.8):
     features = []
+    dinov2_model.eval() # evaluation mode
+
     with torch.no_grad():
         # alternative: ResNet. DINOv2 is ViT-based
         for patch in wsi_patches:
@@ -41,6 +45,8 @@ def patch_to_graph(wsi_patches: list[np.ndarray | torch.Tensor], corners):
             patch_features = patch_features.squeeze(0)
             # rm CLS token
             patch_features = patch_features[1:]
+            # NOTE: not sure if should collapse this into an aggregated patch feature
+            # patch_feature = patch_features.mean(dim=0)
             features.append(patch_features)
     
     num_patches = patch_features.shape[0]
@@ -48,22 +54,25 @@ def patch_to_graph(wsi_patches: list[np.ndarray | torch.Tensor], corners):
 
     # build edges
     # spatial similarity - KDTree
-    kd_tree = KDTree(corners) # use upper-left patch corners from openslide
-    r = 512 # pixel parameter
-    pairs = kd_tree.query_pairs(r)
+    # NOTE: if we want to augment the data via scaling or rotation, we need to switch to centers
+    # since they are scale+rotation-invariant. Otherwise fine
+    kd_tree = KDTree(patch_corners) # use upper-left patch corners from openslide
+    pairs = kd_tree.query_pairs(spatial_radius)
     edge_index_spat = torch.tensor(list(pairs), dtype=torch.long).t().contiguous()
     
     # feature similarity - Cosine similarity
     sim = cosine_similarity(x.numpy())
-    threshold = 0.8
-    i,j = np.where(sim > threshold)
+    i,j = np.where(sim > sim_threshold)
     edge_index_sem = torch.tensor([i,j], dtype=torch.long)
 
     # load labels
-    y = torch.tensor(["PLACEHOLDER"] * num_patches) # TODO: placeholder for actual labels
+    y = torch.tensor([slide_label], dtype=torch.long) # TODO: fit labels
 
+    # Not sure if I should make these in-memory datasets - Alex
+    data_spat= Data(x=x, edge_index=edge_index_spat,y=y)
     data_sem = Data(x=x, edge_index=edge_index_sem,y=y)
 
+    return data_spat, data_sem
 
 if __name__ == "__main__":
     # testing

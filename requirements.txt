@@ -6,5 +6,4 @@ openslide-python
 opencv-python
 openslide-bin
 scipy
-torchvision
 scikit-learn
