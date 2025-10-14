@@ -1,6 +1,8 @@
 .venv/
 test.*
 *.log
+data
+Logs
 
 # not adding .vscode to .gitignore because of extrapaths
 
