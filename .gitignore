@@ -8,5 +8,5 @@ dinov2_patches/
 # not adding .vscode to .gitignore because of extrapaths
 
 # wsi
-*.tiffdinov2_patches/
+*.tiff
 dinov2_patches/
