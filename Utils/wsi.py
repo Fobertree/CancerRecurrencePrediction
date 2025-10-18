@@ -57,8 +57,8 @@ def load_wsi(directory_path: str, threshold: int | None = None):
             try:
                 slide = openslide.OpenSlide(slide_path)
                 # corners for kd-tree -- spatial similarity
-                wsi_patches, corners = sample_random_wsi_patches(slide)
-                res.append((wsi_patches, corners))
+                wsi_patches, centers = sample_random_wsi_patches(slide)
+                res.append((wsi_patches, centers))
 
             except openslide.OpenSlideError as e:
                 print(f"Error opening or processing slide")
@@ -89,7 +89,8 @@ def sample_random_wsi_patches(
         tissue_threshold=0.8
     ):
     res = []
-    up_left_corners = []
+    patch_centers = []
+    centers = []
     # Find the best level for the target magnification
     try:
         # MPP: microns per pixel
@@ -147,15 +148,18 @@ def sample_random_wsi_patches(
         # Save the patch if it meets the tissue threshold
         if tissue_percentage > tissue_threshold:
             img_numpy = np.array(patch_pil)
+            H, W = img_numpy.shape
             res.append(img_numpy)
-            up_left_corners.append((x_origin, y_origin))
+            # up_left_corners.append((x_origin, y_origin))
+            patch_centers.append((x_origin + H // 2, y_origin + W // 2))
             patch_filename = f"patch_{patch_count:04d}_{x_origin}_{y_origin}.png"
             patch_pil.save(os.path.join(output_dir, patch_filename))
             patch_count += 1
             if patch_count % 10 == 0:
+                # could replace this with a tqdm
                 print(f"Extracted {patch_count} patches...")
     
-    return res, up_left_corners
+    return res, patch_centers
 
 
 if __name__ == "__main__":
