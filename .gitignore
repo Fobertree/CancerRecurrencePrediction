@@ -3,6 +3,7 @@ test.*
 *.log
 data
 Logs
+dinov2_patches/
 
 # not adding .vscode to .gitignore because of extrapaths
 
