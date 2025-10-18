@@ -7,4 +7,4 @@ Logs
 # not adding .vscode to .gitignore because of extrapaths
 
 # wsi
-*.tiff
+*.tiffdinov2_patches/
