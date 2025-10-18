@@ -4,6 +4,7 @@ test.*
 data
 Logs
 dinov2_patches/
+__pycache__
 
 # not adding .vscode to .gitignore because of extrapaths
 
