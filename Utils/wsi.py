@@ -2,6 +2,7 @@ import numpy as np
 import os
 import tifffile as tiff
 import itertools
+import pandas as pd
 
 import openslide
 import cv2
@@ -38,7 +39,7 @@ def load_images(directory_path : str, threshold : int | None = None) -> list[np.
     
     return res
 
-def load_wsi(directory_path: str, threshold: int | None = None):
+def load_wsi(directory_path: str, metadata_path: str, threshold: int | None = None):
     '''
     Loads (up to threshold) wsi from path and samples random patches
     
@@ -50,26 +51,61 @@ def load_wsi(directory_path: str, threshold: int | None = None):
     # TODO @thomas: match the logic of this to the dataset structure
     
     # process at most threshold images
-    for dirname, _, filenames in tqdm(itertools.slice(os.walk(directory_path), threshold)):
-        for filename in filenames:
-            slide_path = os.path.join(dirname, filename)
-            
-            try:
-                slide = openslide.OpenSlide(slide_path)
-                # corners for kd-tree -- spatial similarity
-                wsi_patches, centers = sample_random_wsi_patches(slide)
-                res.append((wsi_patches, centers))
+    # load metadata
+    try:
+        df = pd.read_csv(metadata_path)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Metadata CSV not found at {metadata_path}")
 
-            except openslide.OpenSlideError as e:
-                print(f"Error opening or processing slide")
-                logger.error(f"OPENSLIDE OpenSlideError ERROR::load_wsi: slide path: {slide_path}")
-                continue
-            except FileNotFoundError:
-                print(f"Error: WSI file not found at {slide_path}")
-                logger.error(f"OPENSLIDE FileNotFound ERROR::load_wsi: slide path: {slide_path}")
-                continue
+    # collect image files
+    wsi_files = []
+    for root, _, files in os.walk(directory_path):
+        for f in files:
+            if f.lower().endswith((".tif", ".svs")):
+                wsi_files.append(os.path.join(root, f))
 
-            slide.close()
+    if threshold is not None:
+        wsi_files = wsi_files[:threshold]
+
+    # process each WSI
+    for slide_path in tqdm(wsi_files, desc="Loading WSIs"):
+        slide_name = os.path.basename(slide_path).lower()
+
+        # Match metadata row for this slide (case-insensitive)
+        # Standardize slide filename (no extension, lowercase, stripped)
+        slide_stem = os.path.splitext(os.path.basename(slide_path))[0].lower().strip()
+
+        # Standardize CSV column
+        df['svs_stem'] = df['svs_name'].astype(str).str.lower().str.strip().str.replace('.svs','').str.replace('.tif','')
+
+        # Match
+        meta_row = df[df['svs_stem'] == slide_stem]
+        if meta_row.empty:
+            logger.error(f"No metadata found for slide {slide_name}")
+            print(f"Warning: no metadata found for {slide_name}")
+            metadata = {}
+        else:
+            metadata = meta_row.iloc[0].to_dict()
+
+        try:
+            slide = openslide.OpenSlide(slide_path)
+            patches, coords = sample_random_wsi_patches(slide)
+
+            # Add internal OpenSlide info too
+            metadata.update({
+                "slide_dimensions": slide.dimensions,
+                "level_count": slide.level_count,
+                "openslide_properties": dict(slide.properties)
+            })
+
+            res.append((patches, coords, metadata))
+
+        except openslide.OpenSlideError:
+            print(f"Error opening slide {slide_path}")
+            logger.error(f"OpenSlideError::load_wsi: slide path: {slide_path}")
+        finally:
+            if 'slide' in locals():
+                slide.close()
     
     return res
 
@@ -94,9 +130,9 @@ def sample_random_wsi_patches(
     # Find the best level for the target magnification
     try:
         # MPP: microns per pixel
-        level = slide.get_best_level_for_downsample(
-            slide.properties[openslide.PROPERTY_NAME_MPP_X] * (magnification / 20)
-        )
+        mpp_x = float(slide.properties.get(openslide.PROPERTY_NAME_MPP_X, 0.25))  # default 0.25 µm/px if missing
+        downsample = mpp_x * (magnification / 20)
+        level = slide.get_best_level_for_downsample(downsample)
     except KeyError:
         print("Warning: Could not determine best level from MPP. Using slide level 1.")
         level = 1

@@ -1,8 +1,13 @@
 .venv/
 test.*
 *.log
+data
+Logs
+dinov2_patches/
+__pycache__
 
 # not adding .vscode to .gitignore because of extrapaths
 
 # wsi
 *.tiff
+dinov2_patches/
