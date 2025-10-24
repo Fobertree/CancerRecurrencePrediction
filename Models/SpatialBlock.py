@@ -2,29 +2,32 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric
-from torch_geometric.nn.models import GraphSAGE, GCN
+from torch_geometric.nn.models import GraphSAGE, GAT
 
-from graphbuilder import build_spatial_graph
+from graphbuilder import build_spat_graph
 
 class SpatialBlock(nn.Module):
-    def __init__(self, x, patch_corners, slide_labels, spatial_radius = 512) -> None:
+    def __init__(self, x, patch_centers, slide_labels, K = 4) -> None:
         '''
         patch_corners: corners of patches to create graph from
         slide_labels: binary labels >= 26 oncotype dx
         '''
         super().__init__()
-        self.graph = build_spatial_graph(x, patch_corners=patch_corners, 
-                                     slide_labels=slide_labels, 
-                                     spatial_radius=spatial_radius)
+        self.graph = build_spat_graph(x, patch_centers=patch_centers, 
+                                     y=slide_labels, 
+                                     k=K)
         
         # simple mean aggregator for now
         self.graph_sage = GraphSAGE(in_channels=64, out_channels=64, num_layers=4)
-        self.gat = GCN(in_channels=64, out_channels=64, num_layers=3)
-        
+        self.gat = GAT(in_channels=64, out_channels=64, num_layers=3)
+        self.proj = ProjectionBlock()
+
     def forward(self):
-        x, edge_index, y = self.graph
-        self.graph_sage(self.graphX)
-        pass
+        data = self.graph
+        X = self.graph_sage(data.x, data.edge_index)
+        X = self.gat(X, data.edge_index)
+        X = self.proj(X)
+        return X
 
 class ProjectionBlock(nn.Module):
     def __init__(self):
@@ -42,7 +45,6 @@ class ProjectionBlock(nn.Module):
         for m in self.model:
             if isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-
     
     def forward(self, x):
         return self.model.forward(x)

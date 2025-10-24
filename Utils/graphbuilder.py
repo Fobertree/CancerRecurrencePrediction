@@ -145,6 +145,8 @@ def build_spatial_graph(
     data_spat= Data(x=x, edge_index=edge_index_spat,y=y)
     return data_spat
 
+
+# cur graph building
 def build_sim_graph(
         x, #patches
         y, # labels
