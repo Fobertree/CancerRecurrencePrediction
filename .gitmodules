@@ -1,0 +1,3 @@
+[submodule "Models/tmi2022"]
+	path = Models/tmi2022
+	url = https://github.com/vkola-lab/tmi2022.git
