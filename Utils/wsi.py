@@ -3,6 +3,8 @@ import os
 import tifffile as tiff
 import itertools
 import pandas as pd
+import torch
+from torch_geometric import Data
 
 import openslide
 import cv2
@@ -24,15 +26,16 @@ Preprocessing:
 - Find way to standardize image into tensor: TODO @aliu
 '''
 
-def load_images(directory_path : str, threshold : int | None = None) -> list[np.array]:
+def load_images(directory_path : str, threshold : int | None = None) -> list[openslide.OpenSlide]:
     cnt = 0
     res = []
     # TODO @thomas: load labels in this as well
     for dirname, _, filenames in os.walk(directory_path):
         for filename in filenames:
             f_path = os.path.join(dirname, filename)
-            img = tiff.imread(f_path)
-            res.append(img)
+            # img = tiff.imread(f_path)
+            slide = openslide.OpenSlide(f_path)
+            res.append(slide)
             cnt+=1
             if cnt >= threshold:
                 return res
@@ -115,6 +118,96 @@ I got the below code from Gemini, I will keep this for now until we can build so
 I think the WSI preprocessing is the biggest point of improvement for us but also arguably the most complex
 - I think it's best to build out the rest of the model architecture then improve this WSI to graph feature generation as much as possible
 '''
+
+def full_patch_wsi(slide : openslide.OpenSlide,
+                   magnification=20,
+                   tissue_threshold=0.8,
+                   patch_size=256):
+    '''
+    Full patching above threshold
+
+    Also builds and returns the graph
+    '''
+
+    # Find the best level for the target magnification
+    try:
+        # MPP: microns per pixel
+        mpp_x = float(slide.properties.get(openslide.PROPERTY_NAME_MPP_X, 0.25))  # default 0.25 µm/px if missing
+        downsample = mpp_x * (magnification / 20)
+        level = slide.get_best_level_for_downsample(downsample)
+    except KeyError:
+        print("Warning: Could not determine best level from MPP. Using slide level 1.")
+        level = 1
+    
+    downsample = int(slide.level_downsamples[level])
+    level_dims = slide.level_dimensions[level]
+    width, height = level_dims
+
+    print(f"Using level {level} with downsample {downsample}, dims {level_dims}")
+
+    patches, coords = [], []
+
+    # --- Sequentially extract patches ---
+    for y in range(0, height, patch_size):
+        for x in range(0, width, patch_size):
+            w = min(patch_size, width - x)
+            h = min(patch_size, height - y)
+            
+            region = slide.read_region(
+                (int(x * downsample), int(y * downsample)),
+                level,
+                (w, h)
+            ).convert("RGB")
+
+            # TODO: add dinov2 patch embedding here
+
+            arr = np.array(region)
+            gray = np.mean(arr, axis=2)
+            tissue_ratio = np.mean(gray < 220)
+
+            if tissue_ratio >= tissue_threshold:
+                # Flatten RGB patch mean as feature vector (3 dims)
+                feature = np.mean(arr.reshape(-1, 3), axis=0)
+                patches.append(feature)
+                coords.append((x, y))
+
+    if not patches:
+        print("No tissue-rich patches found!")
+        return None
+
+    patches = np.array(patches, dtype=np.float32)
+    coords = np.array(coords, dtype=np.int32)
+
+    # --- Build adjacency (8-neighbor) ---
+    coord_to_idx = {tuple(c): i for i, c in enumerate(coords)}
+    edges = []
+
+    offsets = [
+        (-patch_size, -patch_size), (-patch_size, 0), (-patch_size, patch_size),
+        (0, -patch_size),                     (0, patch_size),
+        (patch_size, -patch_size),  (patch_size, 0),  (patch_size, patch_size)
+    ]
+
+    for i, (x, y) in enumerate(coords):
+        for dx, dy in offsets:
+            neighbor = (x + dx, y + dy)
+            if neighbor in coord_to_idx:
+                j = coord_to_idx[neighbor]
+                edges.append((i, j))
+
+    # Convert to tensor
+    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    x = torch.tensor(patches, dtype=torch.float)
+    pos = torch.tensor(coords, dtype=torch.float)
+
+    data = Data(x=x, edge_index=edge_index, pos=pos)
+
+    # Normalize positions
+    data.pos = (data.pos - data.pos.mean(dim=0)) / data.pos.std(dim=0)    
+
+    print(f"Graph built: {data.num_nodes} nodes, {data.num_edges} edges")
+
+    return data
 
 def sample_random_wsi_patches(
         slide : openslide.OpenSlide,
