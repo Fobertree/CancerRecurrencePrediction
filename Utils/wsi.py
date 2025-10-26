@@ -80,6 +80,11 @@ def load_wsi(directory_path: str, metadata_path: str, threshold: int | None = No
 
         # Match
         meta_row = df[df['svs_stem'] == slide_stem]
+        meta_row['Oncotype DX Breast Recurrence Score'] = "1" if meta_row['Oncotype DX Breast Recurrence Score'] > 25 else "0"
+
+        if meta_row['ER'] == 1 and meta_row['HER'] == 0:
+            print("Slide does not match criteria. Skipping...")
+
         if meta_row.empty:
             logger.error(f"No metadata found for slide {slide_name}")
             print(f"Warning: no metadata found for {slide_name}")
