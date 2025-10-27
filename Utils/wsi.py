@@ -134,45 +134,37 @@ def full_patch_wsi(slide : openslide.OpenSlide,
     Also builds and returns the graph
     '''
 
-    # Find the best level for the target magnification
     try:
-        # MPP: microns per pixel
-        mpp_x = float(slide.properties.get(openslide.PROPERTY_NAME_MPP_X, 0.25))  # default 0.25 µm/px if missing
-        downsample = mpp_x * (magnification / 20)
-        level = slide.get_best_level_for_downsample(downsample)
+        # Read the full-resolution slide
+        full_res = slide.read_region((0, 0), 0, slide.level_dimensions[0]).convert("RGB")
+
+        # Downsample manually to target magnification
+        target_scale = 1 / magnification
+        new_size = (int(full_res.width * target_scale), int(full_res.height * target_scale))
+        downsamp_img = full_res.resize(new_size, Image.Resampling.LANCZOS)
+        downsamp_img = np.array(downsamp_img)
+
+        print(f"Full slide size: {full_res.size}, Downsampled size: {downsamp_img.shape[:2]}")
+
     except KeyError:
-        print("Warning: Could not determine best level from MPP. Using slide level 1.")
-        level = 1
+        print("Warning: Could not determine magnification. Using slide level 1.")
+        downsamp_img = np.array(slide.read_region((0, 0), 1, slide.level_dimensions[1]).convert("RGB"))
     
-    downsample = int(slide.level_downsamples[level])
-    level_dims = slide.level_dimensions[level]
-    width, height = level_dims
-
-    print(f"Using level {level} with downsample {downsample}, dims {level_dims}")
-
+    height,width,_c = downsamp_img.shape
     patches, coords = [], []
 
     # --- Sequentially extract patches ---
     for y in range(0, height, patch_size):
         for x in range(0, width, patch_size):
-            w = min(patch_size, width - x)
-            h = min(patch_size, height - y)
-            
-            region = slide.read_region(
-                (int(x * downsample), int(y * downsample)),
-                level,
-                (w, h)
-            ).convert("RGB")
+            patch = downsamp_img[y:y+patch_size, x:x+patch_size, :]
+            if patch.shape[0] < patch_size or patch.shape[1] < patch_size:
+                continue  # skip incomplete border patches
 
-            # TODO: add dinov2 patch embedding here
-
-            arr = np.array(region)
-            gray = np.mean(arr, axis=2)
+            gray = np.mean(patch, axis=2) # mean rgb channel values
             tissue_ratio = np.mean(gray < 220)
 
             if tissue_ratio >= tissue_threshold:
-                # Flatten RGB patch mean as feature vector (3 dims)
-                feature = np.mean(arr.reshape(-1, 3), axis=0)
+                feature = np.mean(patch.reshape(-1, 3), axis=0)  # simple color feature
                 patches.append(feature)
                 coords.append((x, y))
 
