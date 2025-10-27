@@ -12,6 +12,7 @@ from torch.nn import (
     ModuleList,
     ReLU,
     Sequential,
+    Dropout
 )
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
@@ -46,8 +47,10 @@ class GPS(torch.nn.Module):
         # this default gps setup produces one prediction/single-channel output
         self.mlp = Sequential(
             Linear(channels, channels // 2),
+            Dropout(0.3),
             ReLU(),
             Linear(channels // 2, channels // 4),
+            Dropout(0.3),
             ReLU(),
             Linear(channels // 4, 1),
         )

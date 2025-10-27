@@ -5,6 +5,7 @@ import itertools
 import pandas as pd
 import torch
 from torch_geometric import Data
+import pandas as pd
 
 import openslide
 import cv2
@@ -26,20 +27,24 @@ Preprocessing:
 - Find way to standardize image into tensor: TODO @aliu
 '''
 
-def load_images(directory_path : str, threshold : int | None = None) -> list[openslide.OpenSlide]:
-    cnt = 0
+def load_images(directory_path : str, metadata_path: str, threshold : int | None = None) -> list[openslide.OpenSlide]:
     res = []
+
+    metadata_df = pd.read_csv(metadata_path)
     # TODO @thomas: load labels in this as well
-    for dirname, _, filenames in os.walk(directory_path):
-        for filename in filenames:
-            f_path = os.path.join(dirname, filename)
-            # img = tiff.imread(f_path)
-            slide = openslide.OpenSlide(f_path)
-            res.append(slide)
-            cnt+=1
-            if cnt >= threshold:
-                return res
-    
+    for row in metadata_df:
+        svs_name = row['svs']
+        slide = openslide.OpenSlide(os.path.join(directory_path, f"{svs_name}.tiff"))
+        metadata = row.drop(['svs', 'label']).values()
+        label = row['label']
+
+        res.append((slide, metadata, label))
+        
+
+        if len(res) >= threshold:
+            break
+
+    # (slide, metadata feature-vec, label)
     return res
 
 def load_wsi(directory_path: str, metadata_path: str, threshold: int | None = None):
@@ -226,12 +231,14 @@ def sample_random_wsi_patches(
         mpp_x = float(slide.properties.get(openslide.PROPERTY_NAME_MPP_X, 0.25))  # default 0.25 µm/px if missing
         downsample = mpp_x * (magnification / 20)
         level = slide.get_best_level_for_downsample(downsample)
+
     except KeyError:
         print("Warning: Could not determine best level from MPP. Using slide level 1.")
         level = 1
 
     downsample = int(slide.level_downsamples[level])
     level_dims = slide.level_dimensions[level]
+    downsamples_img_pil = slide.read_region((0,0), 4., level_dims)
 
     # Use a low-resolution thumbnail to create a tissue mask
     thumbnail = slide.get_thumbnail((level_dims[0], level_dims[1]))
