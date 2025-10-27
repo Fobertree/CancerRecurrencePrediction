@@ -35,7 +35,7 @@ Or merge via a hypergraph?
 class TestImageModel(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_heads, ratio):
         super().__init__()
-        self.conv1 = GATConv(in_channels, hidden_channels, concat=True)
+        self.conv1 = GATConv(in_channels, hidden_channels, heads=num_heads, concat=True)
         self.pool1 = TopKPooling(hidden_channels * num_heads, ratio=ratio)
 
         self.conv2 = GATConv(hidden_channels * num_heads, hidden_channels,
@@ -77,7 +77,7 @@ class TestModelWithMetadata(nn.Module):
         self.classifier = nn.Linear(graph_hidden_dim + metadata_hidden_dim, 1)
 
     def forward(self, data):
-        # Run through your GNN and GPS to get a graph representation
+        # Run through GNN and GPS to get a graph representation
         x, edge_index, edge_attr, batch = self.gnn(data.x, data.edge_index, data.batch, data.edge_attr)
         graph_repr = self.gps(x, pe=None, edge_index=edge_index,
                               edge_attr=edge_attr, batch=batch)  # shape [batch_size, graph_hidden_dim]
@@ -90,37 +90,6 @@ class TestModelWithMetadata(nn.Module):
         return self.classifier(z)  # logits of shape [batch_size, 1]
 
 # GPS Graph Transformer: https://pytorch-geometric.readthedocs.io/en/latest/tutorial/graph_transformer.html
-
-class TestModelWithMetadata(nn.Module):
-    def __init__(self, metadata_dim, hidden_channels, ratio,
-                 graph_in_dim, hidden_dim=128, num_heads=4):
-        # combines metadata with graph transformer model
-        super().__init__()
-        self.mlp = nn.Sequential(
-
-        )
-        self.graph_encoder = TestImageModel(graph_in_dim, hidden_channels, num_heads, ratio)
-    
-        self.meta_mlp = nn.Sequential(
-            nn.Linear(metadata_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, hidden_dim)
-        )
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)  # or num_classes
-        )
-
-    def forward(self, data):
-        graph_repr = self.graph_encoder(
-            data.x, data.edge_index, data.batch,
-            data.edge_attr, pe=getattr(data, "pe", None)
-        )  # get a graph-level embedding
-        meta_repr  = self.meta_mlp(data.metadata)  # project the metadata vector
-        z = torch.cat((graph_repr, meta_repr), dim=-1)  # concatenate
-        return self.classifier(z)  # produce a single logit
-
 
 class SlideDataset(torch.utils.data.Dataset):
     def __init__(self, slides, metadata, labels):
@@ -147,7 +116,7 @@ if __name__ == "__main__":
     dataset = SlideDataset(slides, metadata, labels)
 
     # convert the dataset’s labels to a tensor of floats (0/1)
-    all_labels = torch.tensor(dataset.labels, dtype=torch.float32)
+    all_labels = torch.stack(dataset.labels).float()
 
     # count positives and negatives
     pos_count = all_labels.sum().item()
@@ -162,17 +131,19 @@ if __name__ == "__main__":
 
     #tunable hyperparameters
     hidden_channels = 128     # number of hidden channels in GAT/GNN layers
-    hidden_dim = 64           # size of the fused representation
     num_heads = 4             # attention heads in the GPS layer
     ratio = 0.8               # TopKPooling ratio (keep 80 % of nodes)
+    graph_hidden_dim = hidden_channels * num_heads
+    metadata_hidden_dim = 64   # size of the projected metadata representation
 
     # build model and move to device
     model = TestModelWithMetadata(
         metadata_dim=metadata_dim,
+        metadata_hidden_dim=metadata_hidden_dim,
         hidden_channels=hidden_channels,
         ratio=ratio,
         graph_in_dim=graph_in_dim,
-        hidden_dim=hidden_dim,
+        graph_hidden_dim=graph_hidden_dim,
         num_heads=num_heads
     ).to(device)
 
@@ -194,15 +165,11 @@ if __name__ == "__main__":
 
             optimizer.zero_grad()
             # forward pass: model returns logits of shape [batch_size, 1]
-            out = model(
-                data.x, data.edge_index, data.batch,
-                data.edge_attr, pe=getattr(data, "pe", None),
-                metadata=data.metadata
-            )
+            logits = model(data)
             # ensure labels have shape [batch_size, 1] and type float
-            y = data.y.view(-1, 1).to(device)
+            y = data.y.view(-1, 1).float().to(device)
             # compute weighted BCE loss
-            loss = criterion(out, y)
+            loss = criterion(logits, y)
             loss.backward()
             optimizer.step()
 
@@ -215,15 +182,13 @@ if __name__ == "__main__":
         model.eval() # freeze train
         all_preds, all_labels = [], []
 
-        total_error = 0
         for data in loader:
             data = data.to(device)
-            logits = model(data.x, data.pe, data.edge_index, data.edge_attr, data.batch, data.metadata)
+            logits = model(data)
             preds = torch.sigmoid(logits).round().cpu().numpy()
             labels = data.y.cpu().numpy()
             all_preds.append(preds)
             all_labels.append(labels)
-            # total_error += (out.squeeze() - data.y).abs().sum().item()
         
         all_preds = np.concatenate(all_preds)
         all_labels = np.concatenate(all_labels)
@@ -232,29 +197,27 @@ if __name__ == "__main__":
         f1 = f1_score(all_labels, all_preds)
         return cm, acc, f1
 
-        # return total_error / len(loader.dataset)
-
     # holdout
     dataset_train, dataset_test = train_test_split(dataset, test_size=0.1, random_state=42)
-    test_loader = DataLoader(dataset_test, batch_size=BATCH_SIZE)
+    test_loader = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False)
+    train_indices = np.arange(len(dataset_train))
 
-    for i, (train_index, valid_index) in enumerate(kf.split(dataset_train)):
-        train_set = Subset(slides, train_index)
-        valid_set = Subset(slides, valid_index)
+    for i, (train_index, valid_index) in enumerate(kf.split(train_indices)):
+        train_set = Subset(dataset_train, train_index)
+        valid_set = Subset(dataset_train, valid_index)
 
         train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
         val_loader = DataLoader(valid_set, batch_size=BATCH_SIZE, shuffle=True)
 
-        for epoch in range(1, 101):
-            loss = train(train_loader)
-            val_mae = test(val_loader, device)
-            # test_mae = test(test_loader)
-            scheduler.step(val_mae)
-            print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}, Val: {val_mae:.4f}')
+    for epoch in range(1, 101):
+        loss = train(train_loader)
+        cm, acc, f1 = test(val_loader, device)
+        scheduler.step(1.0 - f1)
+        print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}, ValAcc: {acc:.4f}, ValF1: {f1:.4f}')
 
     # final test
-    final_test_mae = test(test_loader, device)
-    print(f'Test MAE: {final_test_mae:.4f}')
+    final_test= test(test_loader, device)
+    print(f'Test : {final_test:.4f}')
 
 
     pass
