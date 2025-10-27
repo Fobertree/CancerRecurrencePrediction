@@ -127,7 +127,7 @@ I think the WSI preprocessing is the biggest point of improvement for us but als
 def full_patch_wsi(slide : openslide.OpenSlide,
                    magnification=20,
                    tissue_threshold=0.8,
-                   patch_size=256):
+                   patch_size=4):
     '''
     Full patching above threshold
 
