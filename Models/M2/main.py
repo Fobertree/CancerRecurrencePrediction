@@ -2,7 +2,7 @@ from wsi import load_images, full_patch_wsi
 from GraphTransformer import GPS
 
 import torch
-import torch.functional as F
+import torch.nn.functional as F
 import torch_geometric
 import torch.nn as nn
 from torch_geometric.nn import GATConv, TopKPooling, global_mean_pool
@@ -31,36 +31,63 @@ Test hypergraph model on metadata vs logistic regression
 Or merge via a hypergraph?
 '''
 
+
 class TestImageModel(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_heads, ratio):
         super().__init__()
-        # MLAP pooling
         self.conv1 = GATConv(in_channels, hidden_channels, concat=True)
         self.pool1 = TopKPooling(hidden_channels * num_heads, ratio=ratio)
-        
-        # graph transformer
-        # use performer attention for now for linear vs quadratic multihead time
-        self.gps1 = GPS(hidden_channels * num_heads, pe_dim=0, num_layers=3, attn_type="performer")
 
-        self.conv2 = GATConv(hidden_channels * num_heads, hidden_channels, heads=num_heads, concat=True)
+        self.conv2 = GATConv(hidden_channels * num_heads, hidden_channels,
+                             heads=num_heads, concat=True)
         self.pool2 = TopKPooling(hidden_channels * num_heads, ratio=ratio)
 
     def forward(self, x, edge_index, batch, edge_attr=None, pe=None):
-        # GAT -> Pool
         x = self.conv1(x, edge_index)
-        x, edge_index, edge_attr, batch, perm, score = self.pool1(x, edge_index, None, batch)
-        x = F.relu(x)
-
-        # GAT -> Pool -> GPS
-        x = self.conv2(x, edge_index)
-        x, edge_index, edge_attr, batch, perm, score = self.pool2(x, edge_index, None, batch)
+        x, edge_index, edge_attr, batch, _, _ = self.pool1(x, edge_index, None, batch)
         x = torch.relu(x)
 
-        x = self.gps1.forward(x, pe, edge_index, edge_attr, batch)
+        x = self.conv2(x, edge_index)
+        x, edge_index, edge_attr, batch, _, _ = self.pool2(x, edge_index, None, batch)
+        x = torch.relu(x)
 
-        # Global pooling after hierarchical processing.
-        # x = global_mean_pool(x, batch)
-        return x # [1] via mlp at end of graph transformer
+        return x, edge_index, edge_attr, batch  # return pooled node features and indices
+
+
+class TestModelWithMetadata(nn.Module):
+    def __init__(self,
+                 graph_in_dim,
+                 metadata_dim,
+                 graph_hidden_dim,
+                 metadata_hidden_dim,
+                 hidden_channels=128,
+                 hidden_dim=64,
+                 num_heads=4,
+                 ratio=0.8):
+        super().__init__()
+        # GNN backbone and GPS encoder (return_repr=True)
+        self.gnn = TestImageModel(graph_in_dim, hidden_channels, num_heads, ratio)
+        self.gps = GPS(channels=graph_hidden_dim, pe_dim=0, num_layers=3,
+                       attn_type='performer', attn_kwargs={}, return_repr=True)
+
+        # If you want to project metadata down to metadata_hidden_dim:
+        self.meta_proj = nn.Linear(metadata_dim, metadata_hidden_dim)
+
+        # Single linear layer for logistic regression on concatenated features
+        self.classifier = nn.Linear(graph_hidden_dim + metadata_hidden_dim, 1)
+
+    def forward(self, data):
+        # Run through your GNN and GPS to get a graph representation
+        x, edge_index, edge_attr, batch = self.gnn(data.x, data.edge_index, data.batch, data.edge_attr)
+        graph_repr = self.gps(x, pe=None, edge_index=edge_index,
+                              edge_attr=edge_attr, batch=batch)  # shape [batch_size, graph_hidden_dim]
+
+        # Project metadata (or use data.metadata directly if you skip projection)
+        meta_repr = self.meta_proj(data.metadata)  # shape [batch_size, metadata_hidden_dim]
+
+        # Concatenate and apply logistic regression
+        z = torch.cat((graph_repr, meta_repr), dim=-1)
+        return self.classifier(z)  # logits of shape [batch_size, 1]
 
 # GPS Graph Transformer: https://pytorch-geometric.readthedocs.io/en/latest/tutorial/graph_transformer.html
 
@@ -85,11 +112,15 @@ class TestModelWithMetadata(nn.Module):
             nn.Linear(hidden_dim, 1)  # or num_classes
         )
 
-    def forward(self, x, pe, edge_index, edge_attr, batch, metadata):
-        graph_repr = self.graph_encoder(x, edge_index, batch, edge_attr, pe)  # [num_graphs, D]
-        meta_repr = self.meta_mlp(metadata)                                   # [num_graphs, D]
-        z = torch.cat((graph_repr, meta_repr), dim=-1)
-        return self.classifier(z)
+    def forward(self, data):
+        graph_repr = self.graph_encoder(
+            data.x, data.edge_index, data.batch,
+            data.edge_attr, pe=getattr(data, "pe", None)
+        )  # get a graph-level embedding
+        meta_repr  = self.meta_mlp(data.metadata)  # project the metadata vector
+        z = torch.cat((graph_repr, meta_repr), dim=-1)  # concatenate
+        return self.classifier(z)  # produce a single logit
+
 
 class SlideDataset(torch.utils.data.Dataset):
     def __init__(self, slides, metadata, labels):
@@ -109,36 +140,75 @@ class SlideDataset(torch.utils.data.Dataset):
 if __name__ == "__main__":
     BATCH_SIZE = 16
 
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     # TODO: load w/ metadata, add confusion matrix metrics
     slides, metadata, labels = zip(*load_images("Data"))
     dataset = SlideDataset(slides, metadata, labels)
-    
-    model = TestModelWithMetadata()
-    # kfold into train, val, test data loaders
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # convert the dataset’s labels to a tensor of floats (0/1)
+    all_labels = torch.tensor(dataset.labels, dtype=torch.float32)
+
+    # count positives and negatives
+    pos_count = all_labels.sum().item()
+    neg_count = len(all_labels) - pos_count
+
+    # compute pos_weight = n_neg / n_pos for BCEWithLogitsLoss
+    pos_weight = torch.tensor([neg_count / pos_count], dtype=torch.float32, device=device)
+
+    # determine dimensionalities
+    metadata_dim = len(metadata[0])
+    graph_in_dim = dataset.slides[0].x.size(1)  # assuming each Data.x has shape [num_nodes, feature_dim]
+
+    #tunable hyperparameters
+    hidden_channels = 128     # number of hidden channels in GAT/GNN layers
+    hidden_dim = 64           # size of the fused representation
+    num_heads = 4             # attention heads in the GPS layer
+    ratio = 0.8               # TopKPooling ratio (keep 80 % of nodes)
+
+    # build model and move to device
+    model = TestModelWithMetadata(
+        metadata_dim=metadata_dim,
+        hidden_channels=hidden_channels,
+        ratio=ratio,
+        graph_in_dim=graph_in_dim,
+        hidden_dim=hidden_dim,
+        num_heads=num_heads
+    ).to(device)
+
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
+
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20,
                                 min_lr=0.00001)
 
-    def train(train_loader, device):
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+    #new training loop with weighted binary cross entropy loss 
+    def train(train_loader):
         model.train()
-
-        total_loss = 0
+        running_loss = 0.0
         for data in train_loader:
+            # move batch to GPU/CPU
             data = data.to(device)
-            optimizer.zero_grad()
-            model.gps1.redraw_projection.redraw_projections()
-            out = model(data.x, data.pe, data.edge_index, data.edge_attr,
-                        data.batch)
-            # TODO: replace with weighted BCE loss
-            loss = (out.squeeze() - data.y).abs().mean()
-            loss.backward()
-            total_loss += loss.item() * data.num_graphs
-            optimizer.step()
-        return total_loss / len(train_loader.dataset)
 
+            optimizer.zero_grad()
+            # forward pass: model returns logits of shape [batch_size, 1]
+            out = model(
+                data.x, data.edge_index, data.batch,
+                data.edge_attr, pe=getattr(data, "pe", None),
+                metadata=data.metadata
+            )
+            # ensure labels have shape [batch_size, 1] and type float
+            y = data.y.view(-1, 1).to(device)
+            # compute weighted BCE loss
+            loss = criterion(out, y)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item() * data.num_graphs
+
+        return running_loss / len(train_loader.dataset)
 
     @torch.no_grad()
     def test(loader, device):
@@ -158,7 +228,6 @@ if __name__ == "__main__":
         all_preds = np.concatenate(all_preds)
         all_labels = np.concatenate(all_labels)
         cm = confusion_matrix(all_labels, all_preds)
-        
         acc = accuracy_score(all_labels, all_preds)
         f1 = f1_score(all_labels, all_preds)
         return cm, acc, f1
@@ -177,8 +246,8 @@ if __name__ == "__main__":
         val_loader = DataLoader(valid_set, batch_size=BATCH_SIZE, shuffle=True)
 
         for epoch in range(1, 101):
-            loss = train(train_set)
-            val_mae = test(val_loader)
+            loss = train(train_loader)
+            val_mae = test(val_loader, device)
             # test_mae = test(test_loader)
             scheduler.step(val_mae)
             print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}, Val: {val_mae:.4f}')

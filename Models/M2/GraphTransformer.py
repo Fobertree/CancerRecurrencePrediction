@@ -25,7 +25,7 @@ from torch_geometric.nn.attention import PerformerAttention
 
 class GPS(torch.nn.Module):
     def __init__(self, channels: int, pe_dim: int, num_layers: int,
-                 attn_type: str, attn_kwargs: Dict[str, Any]):
+                 attn_type: str, attn_kwargs: Dict[str, Any], return_repr: bool = False):
         super().__init__()
 
         self.node_emb = Embedding(28, channels - pe_dim)
@@ -43,6 +43,8 @@ class GPS(torch.nn.Module):
             conv = GPSConv(channels, GINEConv(nn), heads=4,
                            attn_type=attn_type, attn_kwargs=attn_kwargs)
             self.convs.append(conv)
+
+        self.return_repr = return_repr
 
         # this default gps setup produces one prediction/single-channel output
         self.mlp = Sequential(
@@ -66,6 +68,8 @@ class GPS(torch.nn.Module):
         for conv in self.convs:
             x = conv(x, edge_index, batch, edge_attr=edge_attr)
         x = global_add_pool(x, batch)
+        if self.return_repr:
+            return x  # shape [num_graphs, channels]
         return self.mlp(x)
 
 
@@ -110,7 +114,7 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     attn_kwargs = {'dropout': 0.5}
     model = GPS(channels=64, pe_dim=8, num_layers=10, attn_type=args.attn_type,
-                attn_kwargs=attn_kwargs).to(device)
+                attn_kwargs=attn_kwargs, return_repr=True).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20,
                                 min_lr=0.00001)
