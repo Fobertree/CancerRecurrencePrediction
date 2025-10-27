@@ -4,3 +4,6 @@
 [submodule "Models/WSI-PLP"]
 	path = Models/WSI-PLP
 	url = https://github.com/BMIRDS/WSI-PLP.git
+[submodule "dinov3"]
+	path = dinov3
+	url = https://github.com/facebookresearch/dinov3.git

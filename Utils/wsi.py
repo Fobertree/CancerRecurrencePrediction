@@ -163,6 +163,8 @@ def full_patch_wsi(slide : openslide.OpenSlide,
             gray = np.mean(patch, axis=2) # mean rgb channel values
             tissue_ratio = np.mean(gray < 220)
 
+            #TODO: filter out overly green/blue/coffee-brown patches
+
             if tissue_ratio >= tissue_threshold:
                 feature = np.mean(patch.reshape(-1, 3), axis=0)  # simple color feature
                 patches.append(feature)
