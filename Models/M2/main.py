@@ -75,6 +75,8 @@ class TestModelWithMetadata(nn.Module):
         # If you want to project metadata down to metadata_hidden_dim:
         self.meta_proj = nn.Linear(metadata_dim, metadata_hidden_dim)
 
+        self.lin = nn.Linear(graph_hidden_dim + metadata_hidden_dim)
+
         # Single linear layer for logistic regression on concatenated features
         self.classifier = nn.Linear(graph_hidden_dim + metadata_hidden_dim, 1)
 
@@ -89,6 +91,8 @@ class TestModelWithMetadata(nn.Module):
 
         # Concatenate and apply logistic regression
         z = torch.cat((graph_repr, meta_repr), dim=-1)
+        z = self.lin(z)
+        z = self.lin(z)
         return self.classifier(z)  # logits of shape [batch_size, 1]
 
 # GPS Graph Transformer: https://pytorch-geometric.readthedocs.io/en/latest/tutorial/graph_transformer.html
@@ -136,7 +140,7 @@ if __name__ == "__main__":
     num_heads = 4             # attention heads in the GPS layer
     ratio = 0.8               # TopKPooling ratio (keep 80 % of nodes)
     graph_hidden_dim = hidden_channels * num_heads
-    metadata_hidden_dim = 64   # size of the projected metadata representation
+    metadata_hidden_dim = metadata_dim  # size of the projected metadata representation
 
     # build model and move to device
     model = TestModelWithMetadata(
