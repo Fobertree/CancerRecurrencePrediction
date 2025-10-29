@@ -14,6 +14,7 @@ from wsi import load_wsi # load as np arrays
 
 # dinov2_vits14 is one specific model undero dinov2. Use this for now
 dinov2_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+dinov3_model = torch.hub.load("dinov3")
 
 def load_patches(path: str):
     '''

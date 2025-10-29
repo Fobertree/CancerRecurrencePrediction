@@ -31,7 +31,7 @@ def load_images(directory_path : str, metadata_path: str, threshold : int | None
     res = []
 
     metadata_df = pd.read_csv(metadata_path)
-    # TODO @thomas: load labels in this as well
+    # TODO @aliu concurrency
     for row in metadata_df:
         svs_name = row['svs']
         slide = openslide.OpenSlide(os.path.join(directory_path, f"{svs_name}.tiff"))
@@ -116,13 +116,6 @@ def load_wsi(directory_path: str, metadata_path: str, threshold: int | None = No
                 slide.close()
     
     return res
-
-'''
-I got the below code from Gemini, I will keep this for now until we can build something better
-
-I think the WSI preprocessing is the biggest point of improvement for us but also arguably the most complex
-- I think it's best to build out the rest of the model architecture then improve this WSI to graph feature generation as much as possible
-'''
 
 def full_patch_wsi(slide : openslide.OpenSlide,
                    magnification=20,
