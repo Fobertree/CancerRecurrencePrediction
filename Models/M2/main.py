@@ -80,6 +80,10 @@ class TestModelWithMetadata(nn.Module):
         # Single linear layer for logistic regression on concatenated features
         self.classifier = nn.Linear(graph_hidden_dim + metadata_hidden_dim, 1)
 
+        # He init for ReLU
+        for m in [self.meta_proj, self.lin, self.classifier]:
+            nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+
     def forward(self, data):
         # Run through GNN and GPS to get a graph representation
         x, edge_index, edge_attr, batch = self.gnn(data.x, data.edge_index, data.batch, data.edge_attr)

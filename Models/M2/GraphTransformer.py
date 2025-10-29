@@ -21,6 +21,7 @@ from torch_geometric.datasets import ZINC
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GINEConv, GPSConv, global_add_pool
 from torch_geometric.nn.attention import PerformerAttention
+import torch.nn as nn
 
 
 class GPS(torch.nn.Module):
@@ -70,6 +71,11 @@ class GPS(torch.nn.Module):
         x = global_add_pool(x, batch)
         if self.return_repr:
             return x  # shape [num_graphs, channels]
+        
+        for m in self.mlp:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+    
         return self.mlp(x)
 
 
