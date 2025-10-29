@@ -57,6 +57,11 @@ class GPS(torch.nn.Module):
             ReLU(),
             Linear(channels // 4, 1),
         )
+                
+        for m in self.mlp:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                
         self.redraw_projection = RedrawProjection(
             self.convs,
             redraw_interval=1000 if attn_type == 'performer' else None)
@@ -71,10 +76,6 @@ class GPS(torch.nn.Module):
         x = global_add_pool(x, batch)
         if self.return_repr:
             return x  # shape [num_graphs, channels]
-        
-        for m in self.mlp:
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
     
         return self.mlp(x)
 
