@@ -8,3 +8,4 @@ openslide-bin
 scipy
 scikit-learn
 pandas
+torchmetrics

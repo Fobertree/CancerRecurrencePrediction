@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import torch_geometric
 import torch.nn as nn
 from torch_geometric.nn import GATConv, TopKPooling, global_mean_pool
+from torchmetrics.classification import AUROC
 
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from sklearn.model_selection import KFold, train_test_split
@@ -14,6 +15,7 @@ from torch.utils.data import DataLoader
 
 import numpy as np
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, f1_score
+import os
 
 '''
 GNN/GAT/GCN for local neighbors
@@ -159,23 +161,39 @@ if __name__ == "__main__":
     def train(train_loader):
         model.train()
         running_loss = 0.0
+        all_preds = []
+        all_labels = []
         for data in train_loader:
             # move batch to GPU/CPU
             data = data.to(device)
 
             optimizer.zero_grad()
             # forward pass: model returns logits of shape [batch_size, 1]
-            logits = model(data)
-            # ensure labels have shape [batch_size, 1] and type float
-            y = data.y.view(-1, 1).float().to(device)
+            logits = model(data) #preds
+            # ensure labels have shape [batch_size, 1] (column vector) and type float
+            y = data.y.view(-1, 1).float().to(device) #labels
             # compute weighted BCE loss
             loss = criterion(logits, y)
             loss.backward()
             optimizer.step()
 
-            running_loss += loss.item() * data.num_graphs
+            all_preds.append(logits)
+            all_labels.append(y)
 
-        return running_loss / len(train_loader.dataset)
+            running_loss += loss.item() * data.num_graphs
+        
+        # flatten
+        all_preds = np.concatenate(all_preds)
+        all_labels = np.concatenate(all_labels)
+
+        auroc = AUROC(task="binary")
+        auc_score = auroc(all_preds, all_labels)
+
+        cm = confusion_matrix(all_labels, all_preds)
+        acc = accuracy_score(all_labels, all_preds)
+        f1 = f1_score(all_labels, all_preds)
+
+        return running_loss / len(train_loader.dataset), auc_score, acc, f1
 
     @torch.no_grad()
     def test(loader, device):
@@ -186,16 +204,22 @@ if __name__ == "__main__":
             data = data.to(device)
             logits = model(data)
             preds = torch.sigmoid(logits).round().cpu().numpy()
-            labels = data.y.cpu().numpy()
+            # not sure if there will be a shape mismatch here
+            # and if we need to do view(-1,1) for col. vec
+            labels = data.y.cpu().numpy() 
             all_preds.append(preds)
             all_labels.append(labels)
         
         all_preds = np.concatenate(all_preds)
         all_labels = np.concatenate(all_labels)
+        
+        auroc = AUROC(task="binary")
+        auc_score = auroc(all_preds, all_labels)
+
         cm = confusion_matrix(all_labels, all_preds)
         acc = accuracy_score(all_labels, all_preds)
         f1 = f1_score(all_labels, all_preds)
-        return cm, acc, f1
+        return cm, auc_score, acc, f1
 
     # holdout
     dataset_train, dataset_test = train_test_split(dataset, test_size=0.1, random_state=42)
@@ -208,16 +232,22 @@ if __name__ == "__main__":
 
         train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
         val_loader = DataLoader(valid_set, batch_size=BATCH_SIZE, shuffle=True)
+    
+    os.mkdir('Weights', exists=True)
 
     for epoch in range(1, 101):
-        loss = train(train_loader)
-        cm, acc, f1 = test(val_loader, device)
-        scheduler.step(1.0 - f1)
-        print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}, ValAcc: {acc:.4f}, ValF1: {f1:.4f}')
+        # train handles full training loop
+        loss, auc_score, acc, f1 = train(train_loader)
+        
+        # save model
+        torch.save(model.state_dict(), os.path.join("Weights", f"M2Model_{epoch}.pth"))
+
+        cm, auroc, acc, f1 = train(train_loader)
+        print(f'Epoch: {epoch:02d}, Loss: {loss:.4f}, Accuracy: {acc:.4f}, AUROC: {auroc:.4f}, F1-Score: {f1:.4f}')
 
     # final test
-    final_test= test(test_loader, device)
-    print(f'Test : {final_test:.4f}')
+    cm, auroc, acc, f1 = test(val_loader, device)
+    print(f'Test:: accuracy: {acc:.4f}, AUROC: {auroc:.4f} F1-Score: {f1:.4f}')
 
 
     pass
