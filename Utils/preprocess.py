@@ -18,6 +18,9 @@ def downsample_slides_to_img(directory_path : str, destination_path: str, magnif
     '''
     svs_names = []
     
+    # not sure if it makes a difference if we load names from metadata_df instead
+    # we could filter out unwanted images based on absence of metadata if we do that instead
+    # maybe this is smth you could do @thomas
     for file in os.listdir(directory_path):
         if file.endswith(".tiff"):
             svs_names.append(file.strip(".tiff"))
@@ -50,6 +53,7 @@ def downsample_slides_to_img(directory_path : str, destination_path: str, magnif
             return 1
     # END HELPER FUNC
 
+    # If Python 3.14 or 3.13 with special GIL disable, then threadpool should be much better
     with ProcessPoolExecutor(max_workers=4) as executor:
         res = list(tqdm(executor.map(helper, svs_names)))
         print(f"Failed {sum(res)} times")

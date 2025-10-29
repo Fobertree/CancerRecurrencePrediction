@@ -27,18 +27,27 @@ Preprocessing:
 - Find way to standardize image into tensor: TODO @aliu
 '''
 
-def load_images(directory_path : str, metadata_path: str, threshold : int | None = None) -> list[openslide.OpenSlide]:
+def load_images(directory_path : str, metadata_path: str, threshold : int | None = None):
+    '''
+    Load image instead of slide
+    '''
     res = []
 
     metadata_df = pd.read_csv(metadata_path)
-    # TODO @aliu concurrency
-    for row in metadata_df:
-        svs_name = row['svs']
-        slide = openslide.OpenSlide(os.path.join(directory_path, f"{svs_name}.tiff"))
+    # Don't think we need concurrency here
+    for row in tqdm(metadata_df):
+        fname = row['svs']
+        try:
+            img = Image.open(os.path.join(directory_path, f"{fname}.jpeg"))
+        except FileNotFoundError:
+            print(f"File not found: {os.path.join(directory_path, f"{fname}.jpeg")}")
+            continue
+        img_array = np.asarray(img)
+        # slide = openslide.OpenSlide(os.path.join(directory_path, f"{svs_name}.tiff"))
         metadata = row.drop(['svs', 'label']).values()
         label = row['label']
 
-        res.append((slide, metadata, label))
+        res.append((img_array, metadata, label))
         
 
         if len(res) >= threshold:
