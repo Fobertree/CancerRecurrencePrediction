@@ -79,7 +79,7 @@ def patch_to_graph(wsi_patches: list[np.ndarray | torch.Tensor],
 
     edge_index_sem = torch.tensor([rows, cols], dtype=torch.long)
 
-    edge_index = knn_graph(x, k=k, loop=False, flow='target_to_source', cosine=True)
+    edge_index = knn_graph(x, k=K, loop=False, flow='target_to_source', cosine=True)
 
     # load labels
     y = torch.tensor([slide_label], dtype=torch.long) # TODO: fit labels

@@ -88,11 +88,13 @@ class TestModelWithMetadata(nn.Module):
 
         # Project metadata (or use data.metadata directly if you skip projection)
         meta_repr = self.meta_proj(data.metadata)  # shape [batch_size, metadata_hidden_dim]
-
+        z = torch.relu(meta_repr)
         # Concatenate and apply logistic regression
         z = torch.cat((graph_repr, meta_repr), dim=-1)
         z = self.lin(z)
+        z = torch.relu(z)
         z = self.lin(z)
+        z = torch.relu(z)
         return self.classifier(z)  # logits of shape [batch_size, 1]
 
 # GPS Graph Transformer: https://pytorch-geometric.readthedocs.io/en/latest/tutorial/graph_transformer.html
