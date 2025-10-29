@@ -68,6 +68,7 @@ class TestModelWithMetadata(nn.Module):
                  ratio=0.8):
         super().__init__()
         # GNN backbone and GPS encoder (return_repr=True)
+        # @akhil why is gps separated from main model? I don't get it
         self.gnn = TestImageModel(graph_in_dim, hidden_channels, num_heads, ratio)
         self.gps = GPS(channels=graph_hidden_dim, pe_dim=0, num_layers=3,
                        attn_type='performer', attn_kwargs={}, return_repr=True)
@@ -100,6 +101,9 @@ class TestModelWithMetadata(nn.Module):
         z = self.lin(z)
         z = torch.relu(z)
         return self.classifier(z)  # logits of shape [batch_size, 1]
+    
+    def redraw_projections(self):
+        self.gps.redraw_projection.redraw_projections()
 
 # GPS Graph Transformer: https://pytorch-geometric.readthedocs.io/en/latest/tutorial/graph_transformer.html
 
@@ -178,6 +182,7 @@ if __name__ == "__main__":
             data = data.to(device)
 
             optimizer.zero_grad()
+            model.redraw_projections()
             # forward pass: model returns logits of shape [batch_size, 1]
             logits = model(data) #preds
             # ensure labels have shape [batch_size, 1] (column vector) and type float

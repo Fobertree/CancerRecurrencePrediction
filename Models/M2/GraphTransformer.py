@@ -29,6 +29,7 @@ class GPS(torch.nn.Module):
                  attn_type: str, attn_kwargs: Dict[str, Any], return_repr: bool = False):
         super().__init__()
 
+        # TODO: replace this embedding with something more complex
         self.node_emb = Embedding(28, channels - pe_dim)
         self.pe_lin = Linear(20, pe_dim)
         self.pe_norm = BatchNorm1d(20)
@@ -61,7 +62,7 @@ class GPS(torch.nn.Module):
         for m in self.mlp:
             if isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-                
+
         self.redraw_projection = RedrawProjection(
             self.convs,
             redraw_interval=1000 if attn_type == 'performer' else None)
@@ -73,6 +74,8 @@ class GPS(torch.nn.Module):
 
         for conv in self.convs:
             x = conv(x, edge_index, batch, edge_attr=edge_attr)
+        
+        # TODO: Replace with expert pooling
         x = global_add_pool(x, batch)
         if self.return_repr:
             return x  # shape [num_graphs, channels]
