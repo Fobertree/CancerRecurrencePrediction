@@ -11,3 +11,4 @@ __pycache__
 # wsi
 *.tiff
 dinov2_patches/
+run_GT.py
