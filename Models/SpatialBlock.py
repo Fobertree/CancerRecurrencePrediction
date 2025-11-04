@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch_geometric
 from torch_geometric.nn.models import GraphSAGE, GAT
 
-from graphbuilder import build_spat_graph
+from old_graphbuilder import build_spat_graph
 
 class SpatialBlock(nn.Module):
     def __init__(self, x, patch_centers, slide_labels, K = 4) -> None:

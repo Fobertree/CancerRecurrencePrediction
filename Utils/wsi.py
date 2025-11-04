@@ -154,6 +154,7 @@ def load_images(
 
     return res
 
+# Uses metadata
 
 def load_wsi(
     directory_path: str,

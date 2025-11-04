@@ -12,3 +12,4 @@ __pycache__
 *.tiff
 dinov2_patches/
 run_GT.py
+GraphDataset/

@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch_geometric
 from torch_geometric.nn.models import GraphSAGE, GAT
 
-from graphbuilder import build_sim_graph
+from old_graphbuilder import build_sim_graph
 
 class SimilarityBlock(nn.Module):
     def __init__(self, x, y, K=5) -> None:

@@ -29,14 +29,3 @@ graphs = build_graphs_from_loader(
     slide_label_key='label'
 )
 
-from Utils.dataset import CancerRecurrenceGraphDataset
-from torch_geometric.loader import DataLoader
-
-dataset = CancerRecurrenceGraphDataset(root=graph_save_dir, graph_type="combined")
-loader = DataLoader(dataset, batch_size=2, shuffle=True)
-
-# Example iteration
-for batch in loader:
-    print(batch)
-    print(f"Number of graphs in batch: {batch.num_graphs}")
-    break
