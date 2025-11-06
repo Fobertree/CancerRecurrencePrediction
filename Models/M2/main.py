@@ -30,7 +30,11 @@ GraphTransformer
 
 Test hypergraph model on metadata vs logistic regression
 
+Expert pooling
+
 Or merge via a hypergraph?
+
+Fusion with hypergraph
 '''
 
 
@@ -38,6 +42,7 @@ class TestImageModel(nn.Module):
     def __init__(self, in_channels, hidden_channels, num_heads, ratio):
         super().__init__()
         self.conv1 = GATConv(in_channels, hidden_channels, heads=num_heads, concat=True)
+        # TODO: replace with expert pooling or better pooling mechanism
         self.pool1 = TopKPooling(hidden_channels * num_heads, ratio=ratio)
 
         self.conv2 = GATConv(hidden_channels * num_heads, hidden_channels,
@@ -55,7 +60,10 @@ class TestImageModel(nn.Module):
 
         return x, edge_index, edge_attr, batch  # return pooled node features and indices
 
-
+'''
+Fusing 2 models would be novelty
+Expert pooling
+'''
 class TestModelWithMetadata(nn.Module):
     def __init__(self,
                  graph_in_dim,

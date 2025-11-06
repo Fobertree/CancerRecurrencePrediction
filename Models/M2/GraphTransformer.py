@@ -29,7 +29,7 @@ class GPS(torch.nn.Module):
                  attn_type: str, attn_kwargs: Dict[str, Any], return_repr: bool = False):
         super().__init__()
 
-        # TODO: replace this embedding with something more complex
+        # TODO: replace this embedding with something more relevant
         self.node_emb = Embedding(28, channels - pe_dim)
         self.pe_lin = Linear(20, pe_dim)
         self.pe_norm = BatchNorm1d(20)
