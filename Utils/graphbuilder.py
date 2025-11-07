@@ -10,6 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from Utils.wsi import load_wsi, load_images  # use the unified loaders
 from PIL import Image
 import numpy as np
+import ssl
 
 # DINOv2 model
 dinov2_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
@@ -88,13 +89,17 @@ def build_similarity_graph(x, k=8):
     edge_index = torch.tensor([source, target], dtype=torch.long)
     return Data(x=x, edge_index=edge_index)
 
-def build_graphs_from_loader(loader_output, save_dir="GraphDataset", spatial_radius=512, sim_k=8, slide_label_key='label'):
+def build_graphs_from_loader(loader_output, save_dir="GraphDataset", spatial_radius=512, sim_k=8, slide_label_key='label', disable_ssl = True):
     """
     Takes output from load_wsi or load_images and builds spatial + similarity graphs.
     Saves graphs in save_dir.
     """
     os.makedirs(save_dir, exist_ok=True)
     all_graphs = []
+
+    if disable_ssl:
+        # WARNING: this can be a security vulnerability but this is to fix SSL issue with torchhub load DINOv2
+        ssl._create_default_https_context = ssl._create_unverified_context
 
     for idx, item in enumerate(loader_output):
         if len(item) == 4:

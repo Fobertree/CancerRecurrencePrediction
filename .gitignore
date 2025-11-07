@@ -13,3 +13,5 @@ __pycache__
 dinov2_patches/
 run_GT.py
 GraphDataset/
+DataPreprocessed/
+new_metadata.csv

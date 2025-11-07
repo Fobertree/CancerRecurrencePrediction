@@ -379,7 +379,6 @@ def generate_wsi_patches(
         else:
             return existing_patches, centers
 
-
     try:
         slide = openslide.OpenSlide(slide_path)
     except Exception as e:
@@ -460,6 +459,8 @@ def generate_wsi_patches(
         tries = 0
         while count < num_patches and tries < max_tries:
             tries += 1
+
+            # RANDOMLY PATCH. This is NOT sequential
             idx = np.random.randint(len(tissue_coords))
             thumb_y, thumb_x = tissue_coords[idx]  # note: argwhere returns (row, col)
             # map to level coords

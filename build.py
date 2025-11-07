@@ -5,6 +5,7 @@ wsi_dir = "data"
 metadata_path = "data/new_metadata.csv"
 output_patch_dir = "dinov2_patches"
 
+# patching
 wsi_loader_out = load_wsi(
     directory_path=wsi_dir,
     metadata_path=metadata_path,
@@ -21,6 +22,7 @@ from Utils.graphbuilder import build_graphs_from_loader
 
 graph_save_dir = "GraphDataset"
 
+# Graph build
 graphs = build_graphs_from_loader(
     loader_output=wsi_loader_out,
     save_dir=graph_save_dir,

@@ -10,7 +10,7 @@ import pandas as pd
 from PIL import Image
 import numpy as np
 
-def downsample_slides_to_img(directory_path : str, destination_path: str, magnification=20) -> list[openslide.OpenSlide]:
+def downsample_slides_to_img(directory_path : str = "Data", destination_path: str  = "PreprocessedData", magnification=20) -> list[openslide.OpenSlide]:
     '''
     MAKE SURE DESTINATION_PATH IS GITIGNORED
 
@@ -57,3 +57,11 @@ def downsample_slides_to_img(directory_path : str, destination_path: str, magnif
     with ProcessPoolExecutor(max_workers=4) as executor:
         res = list(tqdm(executor.map(helper, svs_names)))
         print(f"Failed {sum(res)} times")
+
+if __name__ == "__main__":
+    import time
+    st = time.time()
+    root_path = "Data"
+    dest_path = "PreprocessedData"
+    downsample_slides_to_img(root_path, dest_path)
+    print(f"Done. Took {time.time() - st:.2f}")

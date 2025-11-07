@@ -10,3 +10,12 @@
 - Build graphs
 
 ``source .venv/bin/activate``
+
+Graph construction in `build.py`
+
+Training and testing in `train.py`
+
+``du -sh *``
+
+For Alex: downloaded zips 1-8
+- Next one: 9
