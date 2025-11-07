@@ -7,3 +7,6 @@ opencv-python
 openslide-bin
 scipy
 scikit-learn
+pandas
+torchmetrics
+matplotlib
