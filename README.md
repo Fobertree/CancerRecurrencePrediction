@@ -19,3 +19,5 @@ Training and testing in `train.py`
 
 For Alex: downloaded zips 1-13
 - Next one: 14
+
+17-18

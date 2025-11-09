@@ -66,7 +66,7 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True):
         batch = batch.to(device)
         if train:
             optimizer.zero_grad()
-            model.redraw_projection.redraw_projections()
+            # model.redraw_projection.redraw_projections()
         
         edge_attr = batch.edge_attr
         if edge_attr is None:
@@ -115,6 +115,28 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True):
 # -----------------------------
 # Start K-Fold Cross Validation
 # -----------------------------
+
+# TMP CODE
+from torch_geometric.nn.pool import global_mean_pool
+from torch_geometric.nn import GATConv
+
+class SimpleGAT(nn.Module):
+    def __init__(self, in_dim, hidden_dim, heads=4, dropout=0.5):
+        super(SimpleGAT, self).__init__()
+        self.gat1 = GATConv(in_dim, hidden_dim, heads=heads, dropout=dropout)
+        self.gat2 = GATConv(hidden_dim * heads, hidden_dim, heads=1, dropout=dropout)
+        self.fc = nn.Linear(hidden_dim, 1)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        x = torch.relu(self.gat1(x, edge_index))
+        x = self.dropout(x)
+        x = torch.relu(self.gat2(x, edge_index))
+        x = global_mean_pool(x, batch)
+        x = self.fc(x)
+        return x.squeeze()
+    
 for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
     print(f"\n=== Fold {fold + 1}/{k_folds} ===")
     
@@ -127,7 +149,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
     attn_kwargs = {'dropout': 0.5}
     model = GPS(
         in_dim=dataset.num_node_features,
-        channels=128,
+        channels=64,
         pe_dim=0,
         num_layers=3,
         attn_type='multihead',
@@ -135,6 +157,8 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
         return_repr=False,
         dropout=0.5 # idk how attn_kwargs works so just using this for now - Alex
     ).to(device)
+
+    # model = SimpleGAT(dataset.num_node_features, 64, heads=4, dropout=0.5).to(device)
     
     all_labels = []
     for batch in train_loader:
