@@ -65,7 +65,7 @@ class CancerRecurrenceGraphDataset(InMemoryDataset):
 
         graph_files = [
             f for f in os.listdir(self.root)
-            if f.startswith(f"{self.graph_type}_graph") and f.endswith(".pt")
+            if f.startswith(f"{self.graph_type}") and f.endswith(".pt")
         ]
         graph_files.sort()  # ensure consistent order
 
@@ -75,7 +75,7 @@ class CancerRecurrenceGraphDataset(InMemoryDataset):
             data = torch.load(graph_path, map_location="cpu", weights_only=False)
 
             # Extract slide_id from filename (adapt this pattern to match yours)
-            slide_id = f.replace(f"{self.graph_type}_graph_", "").replace(".pt", "")
+            slide_id = f.replace(f"{self.graph_type}_", "").replace(".pt", "")
             if slide_id not in label_dict:
                 print(f"Warning: no label for {slide_id}, skipping")
                 continue
