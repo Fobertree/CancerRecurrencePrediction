@@ -13,6 +13,7 @@ import os.path as osp
 from torch_geometric.data import Data
 import torch_geometric.transforms as T
 from sklearn.neighbors import KDTree # for edge construction within L2 dist threshold of patch centers
+from tqdm import tqdm
 
 # from graphbuilder import extract_patch_features
 
@@ -25,6 +26,15 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 # DINOv2 model - this isn't getting used yet
+
+DISABLE_SSL = True
+
+if DISABLE_SSL:
+    # WARNING: this can be a security vulnerability but this is to fix SSL issue with torchhub load DINOv2
+    # I attempted this as a fix to some sort of SSL error/connection error (for some reason the requests fully fail instead of returning 400/500)
+    # I assume we aren't rate-limited (if one exists) bc we only load it once per run?
+    ssl._create_default_https_context = ssl._create_unverified_context
+
 dinov2_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
 dinov2_model.eval()  # set to eval mode
 
@@ -64,22 +74,17 @@ def extract_patch_features(patches):
     return out
 
 
-def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata_path = "Data/new_metadata.csv", slide_label_key='label', disable_ssl = True, save_graph = True):
+def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata_path = "Data/new_metadata.csv", save_graph = True, replace = False):
     '''
     Instead of relying on loader_output from previous graphbuilder, designed to be fully independent
+
+    @replace: To skip reconstrucitng graphs that already exist (based on path), set to False
     '''
     os.makedirs(save_dir, exist_ok=True)
     all_graphs = []
     metadata_df = pd.read_csv(metadata_path, index_col=0).set_index('svs_name')
-
-    if disable_ssl:
-        # WARNING: this can be a security vulnerability but this is to fix SSL issue with torchhub load DINOv2
-        # I attempted this as a fix to some sort of SSL error/connection error (for some reason the requests fully fail instead of returning 400/500)
-        # I assume we aren't rate-limited (if one exists) bc we only load it once per run?
-        ssl._create_default_https_context = ssl._create_unverified_context
-
     
-    for wsi_patch_dir in os.listdir(patch_dir):
+    for wsi_patch_dir in tqdm(os.listdir(patch_dir)):
         fpath = osp.join(patch_dir, wsi_patch_dir)
         if osp.isfile(fpath):
             continue
@@ -87,9 +92,18 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
         # wsi detected (dir), build graph based on patches
 
         wsi_patch_dir_upper = wsi_patch_dir.upper()
+        graph_save_name = osp.join(save_dir, f"graphtransformer_{wsi_patch_dir_upper}.pt")
+
+        if not replace and osp.exists(graph_save_name):
+            # skip. Graph already 
+            logger.warning(f"Detected existence of graph:: {graph_save_name}. Skipping...")
+            graph = torch.load(graph_save_name)
+            all_graphs.append(graph)
+            continue
+
         if wsi_patch_dir_upper not in metadata_df.index:
             logger.error(f'Could not locate in DF:: {wsi_patch_dir_upper}')
-        wsi_metadata = metadata_df.loc=[wsi_patch_dir_upper]
+        wsi_metadata = metadata_df.loc[wsi_patch_dir_upper]
         label = wsi_metadata['Oncotype DX Breast Recurrence Score']
 
         patch_arrays = []
@@ -98,8 +112,9 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
             # THIS IS HARDCODED. MUST MATCH FORMAT
             params = patch_file.removeprefix('patch_').removesuffix('.png').split("_")
             wsi_id, x_pos, y_pos = params
+            x_pos, y_pos = int(x_pos), int(y_pos)
             patch_centers.append((x_pos, y_pos))
-            logger.info(params)
+            # logger.info(params)
 
             # migrated logic from graphbuilder.py - build_graphs_from_loader
             img = Image.open(osp.join(fpath, patch_file)).convert("RGB")               # ensure RGB
@@ -108,6 +123,7 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
 
         x = extract_patch_features(patch_arrays)
         y = torch.tensor([label], dtype=torch.long)
+        # print(patch_centers)
         pos = torch.tensor(patch_centers, dtype=torch.float)
 
         # kdtree to build edge_index
@@ -146,7 +162,8 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
 
         # replaced slide_name with wsi_patch_dir_upper
         if save_graph:
-            torch.save(wsi_graph_directed, os.path.join(save_dir, f"combined_graph_{wsi_patch_dir_upper}.pt"))
+            torch.save(wsi_graph_directed, graph_save_name)
+            logger.info(f"Saved graph: graphtransformer_{wsi_patch_dir_upper}.pt")
         
         # Not sure if we want this or just load from dir
         # seems like we are just load from dir so will prob rm this later - Alex
