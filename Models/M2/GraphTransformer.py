@@ -26,7 +26,7 @@ import torch.nn as nn
 
 class GPS(torch.nn.Module):
     def __init__(self, in_dim, channels: int, pe_dim: int = 0, num_layers: int = 4,
-                 attn_type: str = 'multihead', attn_kwargs=None, return_repr: bool = False):
+                 attn_type: str = 'multihead', attn_kwargs=None, return_repr: bool = False, dropout=0.5):
         super().__init__()
 
         self.return_repr = return_repr
@@ -41,10 +41,12 @@ class GPS(torch.nn.Module):
         # Optional edge projection
         self.edge_lin = Linear(1, channels)  # adjust edge feature dim if known
 
+        # @Thomas, Akhil should I replace this basic MLP with a residual block?
         self.convs = ModuleList()
         for _ in range(num_layers):
             mlp = Sequential(
                 Linear(channels, channels),
+                nn.Dropout(dropout),
                 ReLU(),
                 Linear(channels, channels),
             )
@@ -54,10 +56,10 @@ class GPS(torch.nn.Module):
 
         self.mlp = Sequential(
             Linear(channels, channels // 2),
-            Dropout(0.3),
+            Dropout(dropout),
             ReLU(),
             Linear(channels // 2, channels // 4),
-            Dropout(0.3),
+            Dropout(dropout),
             ReLU(),
             Linear(channels // 4, 1),
         )

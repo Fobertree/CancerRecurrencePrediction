@@ -8,6 +8,14 @@ from sklearn.metrics import roc_auc_score, f1_score
 from sklearn.model_selection import KFold
 import numpy as np
 import matplotlib.pyplot as plt
+import logging
+
+logger = logging.Logger("train", level=logging.DEBUG)
+log_file = 'Logs/train.log'
+file_handler = logging.FileHandler(log_file, mode='a')
+formatter = logging.Formatter('%(asctime)s -%(levelname)s :: %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 # -----------------------------
 # Hyperparameters
@@ -22,7 +30,7 @@ weight_decay = 1e-5
 # -----------------------------
 # Load dataset
 # -----------------------------
-dataset = CancerRecurrenceGraphDataset(root=graph_save_dir, graph_type="combined")
+dataset = CancerRecurrenceGraphDataset(root=graph_save_dir, graph_type="graphtransformer")
 num_graphs = len(dataset)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
@@ -99,15 +107,27 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
     attn_kwargs = {'dropout': 0.5}
     model = GPS(
         in_dim=dataset.num_node_features,
-        channels=64,
+        channels=128,
         pe_dim=0,
-        num_layers=4,
+        num_layers=3,
         attn_type='multihead',
         attn_kwargs=attn_kwargs,
-        return_repr=False
+        return_repr=False,
+        dropout=0.5 # idk how attn_kwargs works so just using this for now - Alex
     ).to(device)
+    
+    all_labels = []
+    for batch in train_loader:
+        all_labels.append(batch.y)
+    
+    y_train = torch.concat(all_labels, dim=0)
 
-    criterion = nn.BCEWithLogitsLoss()
+    num_pos = (y_train == 1).sum()
+    num_neg = (y_train == 0).sum()
+    logger.info(f"Class ratio: Pos: {num_pos}, Neg: {num_neg}")
+    pos_weight = torch.tensor([num_neg/num_pos], dtype=torch.float32).to(device)
+
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     fold_train_losses, fold_val_losses = [], []
