@@ -17,5 +17,5 @@ Training and testing in `train.py`
 
 ``du -sh *``
 
-For Alex: downloaded zips 1-8
-- Next one: 9
+For Alex: downloaded zips 1-12
+- Next one: 13

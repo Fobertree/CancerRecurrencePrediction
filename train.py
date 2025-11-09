@@ -9,6 +9,9 @@ from sklearn.model_selection import KFold
 import numpy as np
 import matplotlib.pyplot as plt
 import logging
+from torchmetrics.classification import confusion_matrix, BinaryPrecision, BinaryRecall
+import os
+import time
 
 logger = logging.Logger("train", level=logging.DEBUG)
 log_file = 'Logs/train.log'
@@ -44,6 +47,8 @@ kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
 all_train_losses, all_val_losses = [], []
 all_train_aurocs, all_val_aurocs = [], []
 all_train_f1s, all_val_f1s = [], []
+all_train_precisions, all_val_precisions = [],[]
+all_train_recalls, all_val_recalls = [],[]
 
 # -----------------------------
 # Helper function: run one epoch
@@ -90,7 +95,22 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True):
         auroc = np.nan
     f1 = f1_score(all_labels_tensor, all_preds_tensor > 0.5, zero_division=0)
 
-    return avg_loss, auroc, f1
+    # just doing this quick fix bc im tired
+    all_preds_tensor = torch.from_numpy(all_preds_tensor)
+    all_labels_tensor = torch.from_numpy(all_labels_tensor)
+    cm_metric = confusion_matrix.BinaryConfusionMatrix()
+    cm_metric.update(all_preds_tensor, all_labels_tensor)
+
+    precision_metric = BinaryPrecision()
+    recall_metric = BinaryRecall()
+    precision_metric.update(all_preds_tensor, all_labels_tensor)
+    recall_metric.update(all_preds_tensor, all_labels_tensor)
+
+    cm = cm_metric.compute()
+    precision = precision_metric.compute()
+    recall = recall_metric.compute()
+
+    return avg_loss, auroc, f1, cm, precision, recall
 
 # -----------------------------
 # Start K-Fold Cross Validation
@@ -133,10 +153,13 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
     fold_train_losses, fold_val_losses = [], []
     fold_train_aurocs, fold_val_aurocs = [], []
     fold_train_f1s, fold_val_f1s = [], []
+    fold_train_precisions, fold_val_precisions = [],[]
+    fold_train_recalls, fold_val_recalls = [],[]
 
     for epoch in range(1, num_epochs + 1):
-        train_loss, train_auroc, train_f1 = run_epoch(train_loader, model, criterion, optimizer, train=True)
-        val_loss, val_auroc, val_f1 = run_epoch(val_loader, model, criterion, train=False)
+        train_loss, train_auroc, train_f1, train_cm, train_precision, train_recall = run_epoch(train_loader, model, criterion, optimizer, train=True)
+        val_loss, val_auroc, val_f1, val_cm, val_precision, val_recall = run_epoch(val_loader, model, criterion, train=False)
+        logger.info(f"Confusion Matrix: {str(val_cm)}")
 
         fold_train_losses.append(train_loss)
         fold_val_losses.append(val_loss)
@@ -144,10 +167,18 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
         fold_val_aurocs.append(val_auroc)
         fold_train_f1s.append(train_f1)
         fold_val_f1s.append(val_f1)
+        fold_train_precisions.append(train_precision)
+        fold_val_precisions.append(val_precision)
+        fold_train_recalls.append(train_recall)
+        fold_val_recalls.append(val_recall)
+
+        logger.debug(f"Epoch {epoch}/{num_epochs} | "
+              f"Train Loss: {train_loss:.4f}, AUROC: {train_auroc:.4f}, F1: {train_f1:.4f} | "
+              f"Val Loss: {val_loss:.4f}, AUROC: {val_auroc:.4f}, F1: {val_f1:.4f}, Precision: {val_precision:.4f}, Recall: {val_recall:.4f}")
 
         print(f"Epoch {epoch}/{num_epochs} | "
               f"Train Loss: {train_loss:.4f}, AUROC: {train_auroc:.4f}, F1: {train_f1:.4f} | "
-              f"Val Loss: {val_loss:.4f}, AUROC: {val_auroc:.4f}, F1: {val_f1:.4f}")
+              f"Val Loss: {val_loss:.4f}, AUROC: {val_auroc:.4f}, F1: {val_f1:.4f}, Precision: {val_precision:.4f}, Recall: {val_recall:.4f}")
 
     all_train_losses.append(fold_train_losses)
     all_val_losses.append(fold_val_losses)
@@ -155,11 +186,15 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
     all_val_aurocs.append(fold_val_aurocs)
     all_train_f1s.append(fold_train_f1s)
     all_val_f1s.append(fold_val_f1s)
+    all_train_precisions.append(fold_train_precisions)
+    all_val_precisions.append(fold_val_precisions)
+    all_train_recalls.append(fold_train_recalls)
+    all_val_recalls.append(fold_val_recalls)
 
 # -----------------------------
 # Plot aggregated metrics
 # -----------------------------
-def plot_kfold_metrics(all_train, all_val, ylabel, title):
+def plot_kfold_metrics(all_train, all_val, ylabel, title, save = True, save_path = "Plots"):
     mean_train = np.nanmean(all_train, axis=0)
     mean_val = np.nanmean(all_val, axis=0)
     std_train = np.nanstd(all_train, axis=0)
@@ -174,7 +209,11 @@ def plot_kfold_metrics(all_train, all_val, ylabel, title):
     plt.ylabel(ylabel)
     plt.title(title)
     plt.legend()
-    plt.show()
+    
+    if (save):
+        plt.savefig(os.path.join(save_path, f"{title}_{time.time()}.png"))
+    else:
+        plt.show()
 
 plot_kfold_metrics(all_train_losses, all_val_losses, "BCE Loss", "Training vs Validation Loss")
 plot_kfold_metrics(all_train_aurocs, all_val_aurocs, "AUROC", "Training vs Validation AUROC")

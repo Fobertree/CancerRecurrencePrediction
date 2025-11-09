@@ -97,7 +97,7 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
         if not replace and osp.exists(graph_save_name):
             # skip. Graph already 
             logger.warning(f"Detected existence of graph:: {graph_save_name}. Skipping...")
-            graph = torch.load(graph_save_name)
+            graph = torch.load(graph_save_name, weights_only=False)
             all_graphs.append(graph)
             continue
 

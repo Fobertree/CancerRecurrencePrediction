@@ -18,6 +18,11 @@ wsi_loader_out = load_wsi(
     sampling="random"
 )
 
+# TEMP CODE TO BREAK OFF OLD GRAPH CONSTRUCTION.
+# Graph Construction v2 in graphbuildertransform.py
+import sys
+sys.exit()
+
 from Utils.graphbuilder import build_graphs_from_loader
 
 graph_save_dir = "GraphDataset"

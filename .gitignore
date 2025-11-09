@@ -15,3 +15,6 @@ run_GT.py
 GraphDataset/
 DataPreprocessed/
 new_metadata.csv
+*.sh
+Plots
+.DS_Store
