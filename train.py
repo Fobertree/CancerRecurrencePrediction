@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import WeightedRandomSampler
 from torch_geometric.loader import DataLoader
 from Utils.dataset import CancerRecurrenceGraphDataset
 from Models.M2.GraphTransformer import GPS
 from sklearn.metrics import roc_auc_score, f1_score
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, StratifiedKFold
 import numpy as np
 import matplotlib.pyplot as plt
 import logging
@@ -42,6 +43,7 @@ print(f"Using device: {device}")
 # K-Fold Cross Validation Setup
 # -----------------------------
 kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+# kf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
 
 # For aggregating metrics across folds
 all_train_losses, all_val_losses = [], []
@@ -66,7 +68,10 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True):
         batch = batch.to(device)
         if train:
             optimizer.zero_grad()
-            # model.redraw_projection.redraw_projections()
+            try:
+                model.redraw_projection.redraw_projections()
+            except:
+                print("Could not redraw projections")
         
         edge_attr = batch.edge_attr
         if edge_attr is None:
@@ -137,25 +142,38 @@ class SimpleGAT(nn.Module):
         x = self.fc(x)
         return x.squeeze()
     
-for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
+for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     print(f"\n=== Fold {fold + 1}/{k_folds} ===")
     
     train_subset = torch.utils.data.Subset(dataset, train_idx)
     val_subset = torch.utils.data.Subset(dataset, val_idx)
+    
+    y = dataset.y
+    class_counts = np.bincount(y[train_idx])
+    class_weights = 1. / class_counts
+    sample_weights = class_weights[y[train_idx]]
+    sample_weights = torch.tensor(sample_weights, dtype=torch.float32)
 
-    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+    # --- Sampler ---
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+
+    train_loader = DataLoader(train_subset, batch_size=batch_size, sampler=sampler, shuffle=False)
     val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
 
     attn_kwargs = {'dropout': 0.5}
     model = GPS(
         in_dim=dataset.num_node_features,
         channels=64,
-        pe_dim=0,
+        pe_dim=32,
         num_layers=3,
         attn_type='multihead',
         attn_kwargs=attn_kwargs,
         return_repr=False,
-        dropout=0.5 # idk how attn_kwargs works so just using this for now - Alex
+        dropout=0.3 # idk how attn_kwargs works so just using this for now - Alex
     ).to(device)
 
     # model = SimpleGAT(dataset.num_node_features, 64, heads=4, dropout=0.5).to(device)
@@ -169,6 +187,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
     num_pos = (y_train == 1).sum()
     num_neg = (y_train == 0).sum()
     logger.info(f"Class ratio: Pos: {num_pos}, Neg: {num_neg}")
+    print(f"Class ratio: Pos: {num_pos}, Neg: {num_neg}")
     pos_weight = torch.tensor([num_neg/num_pos], dtype=torch.float32).to(device)
 
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -242,3 +261,5 @@ def plot_kfold_metrics(all_train, all_val, ylabel, title, save = True, save_path
 plot_kfold_metrics(all_train_losses, all_val_losses, "BCE Loss", "Training vs Validation Loss")
 plot_kfold_metrics(all_train_aurocs, all_val_aurocs, "AUROC", "Training vs Validation AUROC")
 plot_kfold_metrics(all_train_f1s, all_val_f1s, "F1 Score", "Training vs Validation F1 Score")
+
+print(f"Final metrics: AUC: {np.mean(all_val_aurocs[-1]):.4f} F1: {np.mean(all_val_f1s[-1]):.4f} Precisions: {np.mean(all_val_precisions[-1]):.4f} Recalls: {np.mean(all_val_recalls[-1]):.4f}")

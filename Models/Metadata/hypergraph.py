@@ -1,4 +1,6 @@
 import torch
+from sklearn.preprocessing import KBinsDiscretizer
+import pandas as pd
 
 class HypergraphBuilder():
     def __init__(self, df):
@@ -29,9 +31,40 @@ class HypergraphBuilder():
         from torch_geometric.data import Data
 
         edge_index = self.get_edge_index()
-        x = torch.tensor(self.df.values, dtype=torch.float) if add_x else None
+        print(self.df.values[0],  self.df.columns)
+        input()
+        x = torch.tensor(self.df.values, dtype=torch.int64) if add_x else None
 
         return Data(x=x, edge_index=edge_index)
 
 if __name__ == "__main__":
-    pass
+
+    # replace this with your metadata path
+    METADATA_PATH = "/Users/alexanderliu/EmoryCS/CancerRecurrencePrediction/new_metadata.csv"
+
+    # DF LOAD + PREPROCESS
+    def load_metadata_features():
+        df = pd.read_csv(METADATA_PATH)
+        # drop first to prevent multicollinearity
+        df = pd.get_dummies(df, columns=["HistologicType"], drop_first=True)
+
+        continuous_cols = ['Age', 'TumorSize']
+
+        # Initialize KBinsDiscretizer for 4 bins using 'quantile' strategy and 'ordinal' encoding
+        n_bins = 4
+        discretizer = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile')
+
+        # Apply discretization to the selected columns
+        df_discretized_values = discretizer.fit_transform(df[continuous_cols])
+
+        # Create a new DataFrame with the discretized columns
+        df_discretized = pd.DataFrame(df_discretized_values, columns=[col + '_binned' for col in continuous_cols])
+
+        # Combine with original non-discretized columns (e.g., categorical_col)
+        df = pd.concat([df.drop(columns=continuous_cols), df_discretized], axis=1)
+        return df
+
+    df = load_metadata_features()
+    hb = HypergraphBuilder(df)
+    dataset = hb.get_data()
+    print(dataset)

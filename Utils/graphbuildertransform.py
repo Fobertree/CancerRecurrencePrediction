@@ -74,7 +74,7 @@ def extract_patch_features(patches):
     return out
 
 
-def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata_path = "Data/new_metadata.csv", save_graph = True, replace = False):
+def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata_path = "Data/new_metadata.csv", save_graph = True, replace = True):
     '''
     Instead of relying on loader_output from previous graphbuilder, designed to be fully independent
 
@@ -120,6 +120,10 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
             img = Image.open(osp.join(fpath, patch_file)).convert("RGB")               # ensure RGB
             img = img.resize((PATCH_SIZE, PATCH_SIZE), Image.Resampling.LANCZOS)  # resize to multiple of 14
             patch_arrays.append(torch.tensor(np.array(img).transpose(2,0,1), dtype=torch.float)/255.0)
+        
+        if len(patch_arrays) == 0:
+            print(f"COULD NOT FIND PATCHES FOR {wsi_patch_dir}")
+            continue
 
         x = extract_patch_features(patch_arrays)
         y = torch.tensor([label], dtype=torch.long)
@@ -156,6 +160,9 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
             edge_attr=edge_weight.unsqueeze(1) #[E,F]
         )
 
+        #pe_dim = 4 * num_bands. pos is dim 2, times 2 since variation of coeff. sin/cos per freq (with num_bands # freq)
+        wsi_graph_directed.pe = fourier_encode(wsi_graph_directed.pos, num_bands=8)
+
         # make undirected
         undirected_transform = T.ToUndirected()
         wsi_graph_undirected = undirected_transform(wsi_graph_directed)
@@ -171,6 +178,17 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
     
     return all_graphs
 
+
+def fourier_encode(pos, num_bands=8):
+    """
+    pos: [num_nodes, 2] coordinates
+    returns: [num_nodes, 2 * num_bands * 2] encoded features
+    """
+    freq_bands = 2.0 ** torch.linspace(0, num_bands-1, num_bands, device=pos.device)
+    pts = pos.unsqueeze(-1) * freq_bands  # [N, 2, num_bands]
+    sin = torch.sin(pts)
+    cos = torch.cos(pts)
+    return torch.cat([sin, cos], dim=-1).flatten(1)
 
 if __name__ == "__main__":
 

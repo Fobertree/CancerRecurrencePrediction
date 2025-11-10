@@ -33,7 +33,7 @@ class GPS(torch.nn.Module):
         self.use_pe = pe_dim > 0
 
         # Replace embeddings with linear projections
-        self.node_lin = Linear(in_dim, channels - pe_dim if self.use_pe else channels)
+        self.node_lin = Linear(in_dim, channels)
         if self.use_pe:
             self.pe_lin = Linear(pe_dim, pe_dim)
             self.pe_norm = BatchNorm1d(pe_dim)
@@ -88,6 +88,8 @@ class GPS(torch.nn.Module):
         else:
             # No PE, just embed or project nodes
             x = self.node_emb(x.squeeze(-1)) if hasattr(self, 'node_emb') else self.node_lin(x)
+            if pe is not None:
+                x = x + self.pe_lin(self.pe_norm(pe))
 
         if edge_attr is not None and hasattr(self, 'edge_emb'):
             edge_attr = self.edge_emb(edge_attr)
@@ -101,6 +103,9 @@ class GPS(torch.nn.Module):
         if self.return_repr:
             return x
         return self.mlp(x)
+    
+    def redraw_projections(self):
+        self.redraw_projection.redraw_projections()
 
 
 class RedrawProjection:
