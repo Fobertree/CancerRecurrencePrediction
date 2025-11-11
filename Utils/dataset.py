@@ -56,6 +56,8 @@ class CancerRecurrenceGraphDataset(InMemoryDataset):
         label_csv = "data/new_metadata.csv"
         if not os.path.exists(label_csv):
             raise FileNotFoundError(f"Missing label file: {label_csv}")
+        
+        print("PROCESSING DATASET")
 
         labels_df = pd.read_csv(label_csv)
         print(f"Loaded {len(labels_df)} labels from metadata")

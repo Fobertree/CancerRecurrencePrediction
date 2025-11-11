@@ -4,11 +4,13 @@ import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score
 import numpy as np
 from sklearn.preprocessing import KBinsDiscretizer
 
 from NaiveMLP import NaiveMLP
+from sklearn.ensemble import RandomForestClassifier
+import xgboost as xgb
 
 # replace this with your metadata path
 METADATA_PATH = "/Users/alexanderliu/EmoryCS/CancerRecurrencePrediction/new_metadata.csv"
@@ -84,14 +86,24 @@ if __name__ == "__main__":
     model.eval()
     with torch.no_grad():
         preds = model(X_test.to(device)).cpu().numpy().flatten()
+    
+    # clf = RandomForestClassifier(max_depth=7)
+    clf = xgb.XGBClassifier()
+    clf.fit(X_train, y_train)
+    y_test = clf.predict(X_test)
 
     # Threshold at 0.5
     pred_labels = (preds >= 0.5).astype(int)
-    y_true = y_test.numpy().flatten()
+    # y_true = y_test.numpy().flatten()
+    y_true = np.array(y_test)
 
     f1 = f1_score(y_true, pred_labels)
     auc = roc_auc_score(y_true, preds)
+    precision = precision_score(y_true, pred_labels)
+    recall = recall_score(y_true, pred_labels)
 
     print("\n=== Evaluation Results ===")
     print(f"F1 Score: {f1:.4f}")
     print(f"AUC: {auc:.4f}")
+    print(f"Precision: {precision:.3f}")
+    print(f"Recall: {recall:.3f}")

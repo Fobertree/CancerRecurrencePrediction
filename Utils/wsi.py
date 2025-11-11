@@ -449,6 +449,7 @@ def generate_wsi_patches(
         # read from level 0 at (x0,y0) and then downsample to requested size if needed by PIL
         # but OpenSlide supports reading directly at multiple levels: pass lvl as level index
         patch = slide.read_region((x0, y0), lvl, (size, size)).convert("RGB")
+        print(patch.size)
         return patch, (x0, y0)
 
     # Sampling loop

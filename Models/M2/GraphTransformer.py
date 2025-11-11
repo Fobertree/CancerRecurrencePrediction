@@ -33,10 +33,11 @@ class GPS(torch.nn.Module):
         self.use_pe = pe_dim > 0
 
         # Replace embeddings with linear projections
-        self.node_lin = Linear(in_dim, channels)
+        self.node_lin = Linear(in_dim, channels - pe_dim if self.use_pe else channels)
         if self.use_pe:
             self.pe_lin = Linear(pe_dim, pe_dim)
             self.pe_norm = BatchNorm1d(pe_dim)
+            self.node_emb = Embedding(2512, channels - pe_dim)
 
         # Optional edge projection
         self.edge_lin = Linear(1, channels)  # adjust edge feature dim if known
@@ -68,6 +69,8 @@ class GPS(torch.nn.Module):
             if isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
 
+        # ig bc this redraw interval is so high we never redraw
+        # I assume due to small # of epochs we shouldn't redraw at all?
         self.redraw_projection = RedrawProjection(
             self.convs,
             redraw_interval=1000 if attn_type == 'performer' else None)
@@ -84,17 +87,16 @@ class GPS(torch.nn.Module):
         # Only apply PE if it exists
         if pe is not None and hasattr(self, 'pe_norm') and hasattr(self, 'pe_lin'):
             x_pe = self.pe_norm(pe)
-            x = torch.cat((self.node_emb(x.squeeze(-1)), self.pe_lin(x_pe)), dim=1)
+            x = torch.cat([self.node_emb(x.squeeze(-1)).float(), self.pe_lin(x_pe)], dim=1)
         else:
             # No PE, just embed or project nodes
             x = self.node_emb(x.squeeze(-1)) if hasattr(self, 'node_emb') else self.node_lin(x)
-            if pe is not None:
-                x = x + self.pe_lin(self.pe_norm(pe))
 
         if edge_attr is not None and hasattr(self, 'edge_emb'):
             edge_attr = self.edge_emb(edge_attr)
         elif edge_attr is not None and hasattr(self, 'edge_lin'):
-            edge_attr = self.edge_lin(edge_attr)
+            # hacky fix bc type mismatch float and double?
+            edge_attr = self.edge_lin(edge_attr.float())
 
         for conv in self.convs:
             x = conv(x, edge_index, batch, edge_attr=edge_attr)
@@ -103,9 +105,6 @@ class GPS(torch.nn.Module):
         if self.return_repr:
             return x
         return self.mlp(x)
-    
-    def redraw_projections(self):
-        self.redraw_projection.redraw_projections()
 
 
 class RedrawProjection:

@@ -18,3 +18,6 @@ new_metadata.csv
 *.sh
 Plots
 .DS_Store
+Image
+dinov2_patches_seq
+GraphDatasetSeq

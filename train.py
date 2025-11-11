@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import logging
 from torchmetrics.classification import confusion_matrix, BinaryPrecision, BinaryRecall
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os
 import time
 
@@ -24,11 +25,11 @@ logger.addHandler(file_handler)
 # -----------------------------
 # Hyperparameters
 # -----------------------------
-graph_save_dir = "GraphDataset"
+graph_save_dir = "GraphDatasetSeq"
 k_folds = 5
 num_epochs = 50
-batch_size = 4
-learning_rate = 1e-3
+batch_size = 8
+learning_rate = 1e-2 # need super aggressive LR due to very small # epochs
 weight_decay = 1e-5
 
 # -----------------------------
@@ -55,7 +56,7 @@ all_train_recalls, all_val_recalls = [],[]
 # -----------------------------
 # Helper function: run one epoch
 # -----------------------------
-def run_epoch(loader, model, criterion, optimizer=None, train=True):
+def run_epoch(loader, model, criterion, optimizer=None, train=True, scheduler=None):
     if train:
         model.train()
     else:
@@ -68,15 +69,12 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True):
         batch = batch.to(device)
         if train:
             optimizer.zero_grad()
-            try:
-                model.redraw_projection.redraw_projections()
-            except:
-                print("Could not redraw projections")
         
         edge_attr = batch.edge_attr
         if edge_attr is None:
             edge_attr = torch.ones(batch.edge_index.size(1), 1, device=batch.x.device)
 
+        # print(batch)
         out = model(batch).squeeze().view(-1, 1)
         y = batch.y.float().view(-1, 1)
 
@@ -84,6 +82,8 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True):
         if train:
             loss.backward()
             optimizer.step()
+        elif scheduler:
+            scheduler.step()
 
         epoch_loss += loss.item()
         all_preds.append(torch.sigmoid(out).detach().cpu())
@@ -125,23 +125,9 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True):
 from torch_geometric.nn.pool import global_mean_pool
 from torch_geometric.nn import GATConv
 
-class SimpleGAT(nn.Module):
-    def __init__(self, in_dim, hidden_dim, heads=4, dropout=0.5):
-        super(SimpleGAT, self).__init__()
-        self.gat1 = GATConv(in_dim, hidden_dim, heads=heads, dropout=dropout)
-        self.gat2 = GATConv(hidden_dim * heads, hidden_dim, heads=1, dropout=dropout)
-        self.fc = nn.Linear(hidden_dim, 1)
-        self.dropout = nn.Dropout(dropout)
+print(f"DATASET SIZE: {len(dataset.y)}")
 
-    def forward(self, data):
-        x, edge_index, batch = data.x, data.edge_index, data.batch
-        x = torch.relu(self.gat1(x, edge_index))
-        x = self.dropout(x)
-        x = torch.relu(self.gat2(x, edge_index))
-        x = global_mean_pool(x, batch)
-        x = self.fc(x)
-        return x.squeeze()
-    
+# TODO: multiprocess K-Fold
 for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     print(f"\n=== Fold {fold + 1}/{k_folds} ===")
     
@@ -167,17 +153,15 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     attn_kwargs = {'dropout': 0.5}
     model = GPS(
         in_dim=dataset.num_node_features,
-        channels=64,
-        pe_dim=32,
+        channels=64+384,
+        pe_dim=384,
         num_layers=3,
-        attn_type='multihead',
+        attn_type='performer',
         attn_kwargs=attn_kwargs,
         return_repr=False,
-        dropout=0.3 # idk how attn_kwargs works so just using this for now - Alex
+        dropout=0.4
     ).to(device)
 
-    # model = SimpleGAT(dataset.num_node_features, 64, heads=4, dropout=0.5).to(device)
-    
     all_labels = []
     for batch in train_loader:
         all_labels.append(batch.y)
@@ -190,8 +174,10 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     print(f"Class ratio: Pos: {num_pos}, Neg: {num_neg}")
     pos_weight = torch.tensor([num_neg/num_pos], dtype=torch.float32).to(device)
 
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    # criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-5)
 
     fold_train_losses, fold_val_losses = [], []
     fold_train_aurocs, fold_val_aurocs = [], []
@@ -202,7 +188,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     for epoch in range(1, num_epochs + 1):
         train_loss, train_auroc, train_f1, train_cm, train_precision, train_recall = run_epoch(train_loader, model, criterion, optimizer, train=True)
         val_loss, val_auroc, val_f1, val_cm, val_precision, val_recall = run_epoch(val_loader, model, criterion, train=False)
-        logger.info(f"Confusion Matrix: {str(val_cm)}")
+        # logger.info(f"Confusion Matrix: {str(val_cm)}")
 
         fold_train_losses.append(train_loss)
         fold_val_losses.append(val_loss)
@@ -215,9 +201,9 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
         fold_train_recalls.append(train_recall)
         fold_val_recalls.append(val_recall)
 
-        logger.debug(f"Epoch {epoch}/{num_epochs} | "
-              f"Train Loss: {train_loss:.4f}, AUROC: {train_auroc:.4f}, F1: {train_f1:.4f} | "
-              f"Val Loss: {val_loss:.4f}, AUROC: {val_auroc:.4f}, F1: {val_f1:.4f}, Precision: {val_precision:.4f}, Recall: {val_recall:.4f}")
+        # logger.debug(f"Epoch {epoch}/{num_epochs} | "
+        #       f"Train Loss: {train_loss:.4f}, AUROC: {train_auroc:.4f}, F1: {train_f1:.4f} | "
+        #       f"Val Loss: {val_loss:.4f}, AUROC: {val_auroc:.4f}, F1: {val_f1:.4f}, Precision: {val_precision:.4f}, Recall: {val_recall:.4f}")
 
         print(f"Epoch {epoch}/{num_epochs} | "
               f"Train Loss: {train_loss:.4f}, AUROC: {train_auroc:.4f}, F1: {train_f1:.4f} | "
@@ -233,6 +219,8 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     all_val_precisions.append(fold_val_precisions)
     all_train_recalls.append(fold_train_recalls)
     all_val_recalls.append(fold_val_recalls)
+
+    logger.info(f"Fold: {fold+1} Final metrics: AUC: {np.mean(all_val_aurocs[-1]):.4f} F1: {np.mean(all_val_f1s[-1]):.4f} Precisions: {np.mean(all_val_precisions[-1]):.4f} Recalls: {np.mean(all_val_recalls[-1]):.4f}")
 
 # -----------------------------
 # Plot aggregated metrics

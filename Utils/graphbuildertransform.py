@@ -14,6 +14,8 @@ from torch_geometric.data import Data
 import torch_geometric.transforms as T
 from sklearn.neighbors import KDTree # for edge construction within L2 dist threshold of patch centers
 from tqdm import tqdm
+import torch.nn.functional as F
+import itertools
 
 # from graphbuilder import extract_patch_features
 
@@ -38,7 +40,7 @@ if DISABLE_SSL:
 dinov2_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
 dinov2_model.eval()  # set to eval mode
 
-PATCH_SIZE = 224  # multiple of 14 for ViT-S/14
+PATCH_SIZE = 28  # multiple of 14 for ViT-S/14
 
 # COPYPASTED FROM GRAPHBUILDER.PY TO SIDESTEP UTIL PATH IMPORT CONFLICT
 def extract_patch_features(patches):
@@ -74,11 +76,13 @@ def extract_patch_features(patches):
     return out
 
 
-def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata_path = "Data/new_metadata.csv", save_graph = True, replace = True):
+def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata_path = "Data/new_metadata.csv", save_graph = True, replace = False):
     '''
     Instead of relying on loader_output from previous graphbuilder, designed to be fully independent
 
     @replace: To skip reconstrucitng graphs that already exist (based on path), set to False
+
+    DEPRECATED - DO NOT CALL
     '''
     os.makedirs(save_dir, exist_ok=True)
     all_graphs = []
@@ -178,6 +182,153 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
     
     return all_graphs
 
+def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq", metadata_path = "Data/new_metadata.csv", save_graph = True, replace = True):
+    os.makedirs(save_dir, exist_ok=True)
+    all_graphs = []
+    metadata_df = pd.read_csv(metadata_path, index_col=0).set_index('svs_name')
+    
+    # TODO: replace with process pool executor
+    for wsi_patch_dir in tqdm(os.listdir(patch_dir)):
+        fpath = osp.join(patch_dir, wsi_patch_dir)
+        if osp.isfile(fpath):
+            continue
+
+        # wsi detected (dir), build graph based on patches
+
+        wsi_patch_dir_upper = wsi_patch_dir.upper()
+        graph_save_name = osp.join(save_dir, f"graphtransformer_{wsi_patch_dir_upper}.pt")
+
+        if not replace and osp.exists(graph_save_name):
+            # skip. Graph already 
+            logger.warning(f"Detected existence of graph:: {graph_save_name}. Skipping...")
+            graph = torch.load(graph_save_name, weights_only=False)
+            all_graphs.append(graph)
+            continue
+
+        if wsi_patch_dir_upper not in metadata_df.index:
+            logger.error(f'Could not locate in DF:: {wsi_patch_dir_upper}')
+        wsi_metadata = metadata_df.loc[wsi_patch_dir_upper]
+        label = wsi_metadata['Oncotype DX Breast Recurrence Score']
+
+        patch_arrays = []
+        patch_centers = []
+        patch_center_indices = {}
+        patch_idx = 0
+        for patch_file in os.listdir(fpath):
+            # THIS IS HARDCODED. MUST MATCH FORMAT
+            params = patch_file.removeprefix('patch_').removesuffix('.png').split("_")
+            wsi_id, x_pos, y_pos = params
+            x_pos, y_pos = int(x_pos), int(y_pos)
+            patch_centers.append((x_pos, y_pos))
+            patch_center_indices[(x_pos, y_pos)] = patch_idx #indexer for edge_index construction
+            patch_idx += 1
+            # logger.info(params)
+
+            # migrated logic from graphbuilder.py - build_graphs_from_loader
+            img = Image.open(osp.join(fpath, patch_file)).convert("RGB")               # ensure RGB
+            img = img.resize((PATCH_SIZE, PATCH_SIZE), Image.Resampling.LANCZOS)  # resize to multiple of 14
+            patch_tensor = torch.tensor(np.array(img).transpose(2,0,1), dtype=torch.float)/255.0
+            patch_arrays.append(patch_tensor)
+        
+        if len(patch_arrays) == 0:
+            print(f"COULD NOT FIND PATCHES FOR {wsi_patch_dir}")
+            continue
+        
+        # dinov2 patch embeddings
+        pe = extract_patch_features(patch_arrays)
+        y = torch.tensor([label], dtype=torch.long)
+        x = torch.arange(len(patch_arrays), dtype=torch.long).unsqueeze(-1)
+        # print(patch_centers)
+        pos = torch.tensor(patch_centers, dtype=torch.float)
+
+        # TODO: neighbor edge_index construction by immediate 8-neighbor adjacency
+        edge_index = create_8_neighbor_edge_index(patch_center_indices)
+        # TODO: edge weights by cosine similarity of neighbors
+        src, dst = edge_index
+        patches_tensor = torch.stack(patch_arrays).double()  # shape [N, 3, H, W]
+        patches_flat = patches_tensor.flatten(start_dim=1)   # shape [N, 3*H*W]
+
+        edge_weight = F.cosine_similarity(
+            patches_flat[src], patches_flat[dst], dim=1
+        )
+
+        wsi_graph_directed = Data(
+            x=x,
+            edge_index=edge_index,
+            y=y,
+            pos=pos,
+            pe=pe,
+            edge_attr=edge_weight.unsqueeze(1) #[E,F]
+        )
+
+        print(x.shape, pe.shape, edge_index.shape, y.shape, pos.shape, edge_weight.unsqueeze(1).shape)
+
+        # make undirected
+        undirected_transform = T.ToUndirected()
+        wsi_graph_undirected = undirected_transform(wsi_graph_directed)
+
+        # replaced slide_name with wsi_patch_dir_upper
+        if save_graph:
+            torch.save(wsi_graph_directed, graph_save_name)
+            logger.debug(f"Saved graph: graphtransformerseq_{wsi_patch_dir_upper}.pt")
+        
+        # Not sure if we want this or just load from dir
+        # seems like we are just load from dir so will prob rm this later - Alex
+        all_graphs.append(wsi_graph_undirected)
+
+        # WE NEED CONSISTENT SHAPE IN X.dim and there pe.dim
+        # TODO: create projection to project all dimensions into common dimensionality
+        # find max dims across dataset
+        max_x_dim = max(g.x.shape[1] for g in all_graphs)
+        max_pe_dim = max(g.pe.shape[1] for g in all_graphs)
+
+        # pad function
+        def pad_tensor(t, target_dim):
+            if t.shape[1] < target_dim:
+                pad_amt = target_dim - t.shape[1]
+                padding = torch.zeros((t.shape[0], pad_amt), device=t.device)
+                t = torch.cat([t, padding], dim=1)
+            return t
+
+        # apply
+        for g in all_graphs:
+            g.x = pad_tensor(g.x, max_x_dim)
+            g.pe = pad_tensor(g.pe, max_pe_dim) 
+                
+    return all_graphs
+
+
+def create_8_neighbor_edge_index(node_idx: dict):
+    """
+    Generates the edge_index for an 8-neighbor adjacency graph on a grid.
+    
+    Args:
+        height (int): The height of the grid (image).
+        width (int): The width of the grid (image).
+        
+    Returns:
+        torch.Tensor: The edge_index tensor of shape [2, num_edges].
+    """
+    # Calculate the total number of nodes (pixels)
+    
+    # Initialize lists to store source and target nodes of edges
+    source_nodes = []
+    target_nodes = []
+    
+    logger.info(node_idx.keys())
+
+    for src, src_idx in node_idx.items():
+        for dst, dst_idx in node_idx.items():
+            if src == dst:
+                continue
+                
+            source_nodes.append(src_idx)
+            target_nodes.append(dst_idx)
+                    
+    # Convert lists to a PyTorch tensor with shape [2, num_edges]
+    edge_index = torch.tensor([source_nodes, target_nodes], dtype=torch.long)
+    
+    return edge_index
 
 def fourier_encode(pos, num_bands=8):
     """
@@ -194,4 +345,5 @@ if __name__ == "__main__":
 
     # build graphs directly
     # designed to be self-contained so just run this on dinov2_patches
-    build_graphs()
+    # build_graphs()
+    build_graphs_seq(replace=False)
