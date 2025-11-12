@@ -15,7 +15,9 @@ import torch_geometric.transforms as T
 from sklearn.neighbors import KDTree # for edge construction within L2 dist threshold of patch centers
 from tqdm import tqdm
 import torch.nn.functional as F
-import itertools
+
+# umap
+import umap
 
 # from graphbuilder import extract_patch_features
 
@@ -236,10 +238,27 @@ def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq
         
         # dinov2 patch embeddings
         pe = extract_patch_features(patch_arrays)
+
+        # DIMENSION REDUCTION OF DINOv2 PE - UMAP
+        # input dim - 384
+        
+        embeddings_high_dim = pe
+        reducer = umap.UMAP(
+            n_neighbors=15,
+            min_dist=0.1,
+            n_components=10, # output dim
+            metric='euclidean',
+            init="random", # idk if this is bad, but is a bypass for a spectral scipy.linalg.eigh issue for compute eigenpairs on spare matrix
+            random_state=42 #reproducability
+        )
+        embeddings_low_dim = torch.from_numpy(reducer.fit_transform(embeddings_high_dim))
+
         y = torch.tensor([label], dtype=torch.long)
         x = torch.arange(len(patch_arrays), dtype=torch.long).unsqueeze(-1)
         # print(patch_centers)
         pos = torch.tensor(patch_centers, dtype=torch.float)
+
+        print(pos.shape)
 
         # TODO: neighbor edge_index construction by immediate 8-neighbor adjacency
         edge_index = create_8_neighbor_edge_index(patch_center_indices)
@@ -257,11 +276,11 @@ def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq
             edge_index=edge_index,
             y=y,
             pos=pos,
-            pe=pe,
+            pe=embeddings_low_dim,
             edge_attr=edge_weight.unsqueeze(1) #[E,F]
         )
 
-        print(x.shape, pe.shape, edge_index.shape, y.shape, pos.shape, edge_weight.unsqueeze(1).shape)
+        print(x.shape, pe.shape, embeddings_low_dim.shape, edge_index.shape, y.shape, pos.shape, edge_weight.unsqueeze(1).shape)
 
         # make undirected
         undirected_transform = T.ToUndirected()
@@ -294,6 +313,7 @@ def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq
         for g in all_graphs:
             g.x = pad_tensor(g.x, max_x_dim)
             g.pe = pad_tensor(g.pe, max_pe_dim) 
+            print("OK", g.pe.shape)
                 
     return all_graphs
 
@@ -346,4 +366,4 @@ if __name__ == "__main__":
     # build graphs directly
     # designed to be self-contained so just run this on dinov2_patches
     # build_graphs()
-    build_graphs_seq(replace=False)
+    build_graphs_seq(replace=True)

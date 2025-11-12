@@ -14,6 +14,7 @@ from torchmetrics.classification import confusion_matrix, BinaryPrecision, Binar
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os
 import time
+from Utils.earlystopper import EarlyStopper
 
 logger = logging.Logger("train", level=logging.DEBUG)
 log_file = 'Logs/train.log'
@@ -27,9 +28,9 @@ logger.addHandler(file_handler)
 # -----------------------------
 graph_save_dir = "GraphDatasetSeq"
 k_folds = 5
-num_epochs = 50
-batch_size = 8
-learning_rate = 1e-2 # need super aggressive LR due to very small # epochs
+num_epochs = 30
+batch_size = 2 # low batch size to regularize
+learning_rate = 1e-4 # need super aggressive LR due to very small # epochs
 weight_decay = 1e-5
 
 # -----------------------------
@@ -52,6 +53,8 @@ all_train_aurocs, all_val_aurocs = [], []
 all_train_f1s, all_val_f1s = [], []
 all_train_precisions, all_val_precisions = [],[]
 all_train_recalls, all_val_recalls = [],[]
+
+early_stopper = EarlyStopper(patience=5, min_delta=100)
 
 # -----------------------------
 # Helper function: run one epoch
@@ -121,10 +124,6 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True, scheduler=No
 # Start K-Fold Cross Validation
 # -----------------------------
 
-# TMP CODE
-from torch_geometric.nn.pool import global_mean_pool
-from torch_geometric.nn import GATConv
-
 print(f"DATASET SIZE: {len(dataset.y)}")
 
 # TODO: multiprocess K-Fold
@@ -153,13 +152,13 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     attn_kwargs = {'dropout': 0.5}
     model = GPS(
         in_dim=dataset.num_node_features,
-        channels=64+384,
-        pe_dim=384,
+        channels=64,
+        pe_dim=10,
         num_layers=3,
         attn_type='performer',
         attn_kwargs=attn_kwargs,
         return_repr=False,
-        dropout=0.4
+        dropout=0.5
     ).to(device)
 
     all_labels = []
@@ -208,6 +207,17 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
         print(f"Epoch {epoch}/{num_epochs} | "
               f"Train Loss: {train_loss:.4f}, AUROC: {train_auroc:.4f}, F1: {train_f1:.4f} | "
               f"Val Loss: {val_loss:.4f}, AUROC: {val_auroc:.4f}, F1: {val_f1:.4f}, Precision: {val_precision:.4f}, Recall: {val_recall:.4f}")
+
+        print(val_cm)
+        # TP FP
+        # FN TN
+
+        # see line 218 of confusion_matrix.py
+
+        # early stopping
+        if early_stopper.early_stop(validation_loss=val_loss):
+            print(f"EARLY STOP AT EPOCH: {epoch}")
+            break
 
     all_train_losses.append(fold_train_losses)
     all_val_losses.append(fold_val_losses)
