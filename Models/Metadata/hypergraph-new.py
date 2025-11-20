@@ -3,14 +3,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, KBinsDiscretizer
 from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score, precision_recall_curve
 from torch_geometric.nn import HypergraphConv
 from sklearn.neighbors import NearestNeighbors
 import numpy as np
 
 # -------------------------------
-# DATA PREPROCESSING
+# DATA PREPROCESSING (MATCHING OTHER MODELS)
 # -------------------------------
 METADATA_PATH = "C:/Users/thoma/Documents/CS-371W/CancerRecurrencePrediction/new_metadata.csv"
 
@@ -18,16 +18,20 @@ def load_metadata_features():
     df = pd.read_csv(METADATA_PATH)
     if "Unnamed: 0" in df.columns:
         df = df.drop(columns=["Unnamed: 0"])
-    
+
     # One-hot encode categorical features
     categorical_cols = ["HistologicType"]
     df = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
-    
-    # Scale continuous features
+
+    # Discretize continuous features
     continuous_cols = ['Age', 'TumorSize']
-    scaler = StandardScaler()
-    df[continuous_cols] = scaler.fit_transform(df[continuous_cols])
-    
+    n_bins = 4
+    discretizer = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile')
+    df_discretized_values = discretizer.fit_transform(df[continuous_cols])
+    df_discretized = pd.DataFrame(df_discretized_values, columns=[col + "_binned" for col in continuous_cols])
+
+    # Combine discretized features with the rest
+    df = pd.concat([df.drop(columns=continuous_cols), df_discretized], axis=1)
     return df
 
 df = load_metadata_features()
@@ -35,7 +39,11 @@ df = load_metadata_features()
 # Target
 y = df["Oncotype DX Breast Recurrence Score"].values
 X_cols = [col for col in df.columns if col not in ["Oncotype DX Breast Recurrence Score", "svs_name"]]
-X = df[X_cols].values.astype(np.float32)
+X = df[X_cols].values
+
+# Scale all features
+scaler = StandardScaler()
+X = scaler.fit_transform(X)
 
 # Train-test split
 X_train, X_test, y_train, y_test = train_test_split(
@@ -101,29 +109,19 @@ class HypergraphNN(nn.Module):
 model = HypergraphNN(in_channels=X_train.shape[1]).to(device)
 
 # -------------------------------
-# FOCAL LOSS
+# BCE LOSS WITH POS_WEIGHT (like MLP)
 # -------------------------------
-class FocalLoss(nn.Module):
-    def __init__(self, gamma=2.0, alpha=None):
-        super().__init__()
-        self.gamma = gamma
-        self.alpha = alpha
+num_pos = (y_train == 1).sum()
+num_neg = (y_train == 0).sum()
+pos_weight = torch.tensor([num_neg / num_pos], dtype=torch.float32).to(device)
 
-    def forward(self, inputs, targets):
-        BCE_loss = nn.functional.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        pt = torch.exp(-BCE_loss)
-        F_loss = (1 - pt) ** self.gamma * BCE_loss
-        if self.alpha is not None:
-            F_loss = self.alpha * F_loss
-        return F_loss.mean()
-
-criterion = FocalLoss(gamma=2.0)
+criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
 # -------------------------------
-# TRAINING
+# TRAINING LOOP
 # -------------------------------
 optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-epochs = 200
+epochs = 400
 
 for epoch in range(epochs):
     model.train()
@@ -133,7 +131,7 @@ for epoch in range(epochs):
     loss.backward()
     optimizer.step()
     
-    if (epoch+1) % 20 == 0:
+    if (epoch + 1) % 20 == 0:
         print(f"Epoch [{epoch+1}/{epochs}] Loss: {loss.item():.4f}")
 
 # -------------------------------
@@ -145,7 +143,7 @@ with torch.no_grad():
 
 # Threshold tuning via F1
 precision_vals, recall_vals, thresholds = precision_recall_curve(y_test.numpy().flatten(), preds)
-f1_scores = 2*precision_vals*recall_vals/(precision_vals+recall_vals+1e-8)
+f1_scores = 2 * precision_vals * recall_vals / (precision_vals + recall_vals + 1e-8)
 best_thresh = thresholds[np.argmax(f1_scores)]
 pred_labels = (preds >= best_thresh).astype(int)
 
