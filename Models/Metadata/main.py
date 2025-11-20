@@ -13,8 +13,7 @@ from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
 
 # replace this with your metadata path
-METADATA_PATH = "/Users/alexanderliu/EmoryCS/CancerRecurrencePrediction/new_metadata.csv"
-
+METADATA_PATH = "/Users/hello/Python/CancerRecurrencePrediction/CancerRecurrencePrediction/new_metadata(in).csv"
 
 # DF LOAD + PREPROCESS
 def load_metadata_features():

@@ -1,67 +1,97 @@
-'''
-Split image preprocessing and patching
-'''
+"""
+Split image preprocessing and patching (simple: read level-0, downsample, save JPEG)
+"""
 
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
 import openslide
 import os
-import pandas as pd
+from pathlib import Path
 from PIL import Image
 import numpy as np
 
-def downsample_slides_to_img(directory_path : str = "Data", destination_path: str  = "PreprocessedData", magnification=20) -> list[openslide.OpenSlide]:
-    '''
-    MAKE SURE DESTINATION_PATH IS GITIGNORED
+VALID_EXTS = (".tiff", ".tif", ".svs")
 
-    Downsamples and saves images as preprocessing
-    '''
-    svs_names = []
-    
-    # not sure if it makes a difference if we load names from metadata_df instead
-    # we could filter out unwanted images based on absence of metadata if we do that instead
-    # maybe this is smth you could do @thomas
-    for file in os.listdir(directory_path):
-        if file.endswith(".tiff"):
-            svs_names.append(file.strip(".tiff"))
-    
-    def helper(svs_name):
-        '''
-        Choose 20 because compute limitations (~1k-1.5k per dim after downsample)
-        '''
+def _process_one(src_path: Path, dst_dir: Path, magnification: float) -> int:
+    """
+    Top-level worker so it can be pickled on Windows.
+    Returns 0 on success, 1 on fallback/handled warning, 2 on error.
+    """
+    try:
+        slide = openslide.OpenSlide(str(src_path))
+        # Read the full-resolution slide
+        full_res = slide.read_region((0, 0), 0, slide.level_dimensions[0]).convert("RGB")
+
+        # Downsample manually to target magnification
+        target_scale = 1.0 / float(magnification)
+        new_size = (max(1, int(full_res.width * target_scale)),
+                    max(1, int(full_res.height * target_scale)))
+        downsamp_img = full_res.resize(new_size, Image.Resampling.LANCZOS)
+
+        # Save JPEG
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        out_path = dst_dir / (src_path.stem + ".jpeg")
+        downsamp_img.save(out_path, format="JPEG", quality=90, optimize=True)
+
+        # Optional: print sizes
+        # print(f"{src_path.name}: {full_res.size} -> {downsamp_img.size}")
+
+        return 0
+
+    except KeyError:
+        # Fallback to level 1 if level 0 props missing
         try:
-            slide = openslide.OpenSlide(os.path.join(directory_path, f"{svs_name}.tiff"))
-            # Read the full-resolution slide
-            full_res = slide.read_region((0, 0), 0, slide.level_dimensions[0]).convert("RGB")
-
-            # Downsample manually to target magnification
-            target_scale = 1 / magnification
-            new_size = (int(full_res.width * target_scale), int(full_res.height * target_scale))
-            downsamp_img = full_res.resize(new_size, Image.Resampling.LANCZOS)
-            downsamp_img = np.array(downsamp_img)
-
-            # save image
-            im = Image.fromarray(downsamp_img)
-            im.save(os.path.join(destination_path,f"{svs_name}.jpeg")) # save jpeg bc lossy
-
-            print(f"Full slide size: {full_res.size}, Downsampled size: {downsamp_img.shape[:2]}")
-            return 0
-
-        except KeyError:
-            print("Warning: Could not determine magnification. Using slide level 1.")
             downsamp_img = np.array(slide.read_region((0, 0), 1, slide.level_dimensions[1]).convert("RGB"))
+            out_path = dst_dir / (src_path.stem + ".jpeg")
+            Image.fromarray(downsamp_img).save(out_path, format="JPEG", quality=90, optimize=True)
             return 1
-    # END HELPER FUNC
+        except Exception as e:
+            print(f"ERROR (fallback) {src_path.name}: {e}")
+            return 2
+    except Exception as e:
+        print(f"ERROR {src_path.name}: {e}")
+        return 2
 
-    # If Python 3.14 or 3.13 with special GIL disable, then threadpool should be much better
-    with ProcessPoolExecutor(max_workers=4) as executor:
-        res = list(tqdm(executor.map(helper, svs_names)))
-        print(f"Failed {sum(res)} times")
+
+def downsample_slides_to_img(directory_path: str = "Data",
+                             destination_path: str = "PreprocessedData",
+                             magnification: float = 20.0,
+                             max_workers: int = 4) -> None:
+    """
+    Downsamples and saves images as preprocessing.
+    Note: still reads level-0 into RAM (heavy). This mirrors the original behavior.
+    """
+    src_dir = Path(directory_path)
+    dst_dir = Path(destination_path)
+
+    # Gather slide files (keep full filenames with extensions)
+    slides = [p for p in src_dir.iterdir() if p.is_file() and p.suffix.lower() in VALID_EXTS]
+    print(f"Found {len(slides)} slides in {src_dir}")
+
+    if not slides:
+        return
+
+    # Windows-friendly multiprocessing (top-level function)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Avoid lambdas/locals (not picklable on Windows - spawn start method).
+        # Create iterables for the constant args so we can call the top-level _process_one
+        # directly with executor.map(src_path, dst_dir, magnification).
+        dst_iter = [dst_dir] * len(slides)
+        mag_iter = [magnification] * len(slides)
+        results = list(tqdm(
+            executor.map(_process_one, slides, dst_iter, mag_iter),
+            total=len(slides)
+        ))
+
+    failed = sum(1 for r in results if r == 2)
+    print(f"Failed {failed} times")
+
 
 if __name__ == "__main__":
     import time
     st = time.time()
     root_path = "Data"
     dest_path = "PreprocessedData"
-    downsample_slides_to_img(root_path, dest_path)
+    os.makedirs(dest_path, exist_ok=True)
+    downsample_slides_to_img(root_path, dest_path, magnification=20.0, max_workers=4)
     print(f"Done. Took {time.time() - st:.2f}")
