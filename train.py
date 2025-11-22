@@ -15,6 +15,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os
 import time
 from Utils.earlystopper import EarlyStopper
+from Utils.focalloss import FocalLoss
 
 logger = logging.Logger("train", level=logging.DEBUG)
 log_file = 'Logs/train.log'
@@ -29,9 +30,9 @@ logger.addHandler(file_handler)
 graph_save_dir = "GraphDatasetSeq"
 k_folds = 5
 num_epochs = 30
-batch_size = 2 # low batch size to regularize
-learning_rate = 1e-4 # need super aggressive LR due to very small # epochs
-weight_decay = 1e-5
+batch_size = 8 # low batch size to regularize
+learning_rate = 1e-4
+weight_decay = 1e-7 # L2 regularization param for Adam
 
 # -----------------------------
 # Load dataset
@@ -54,7 +55,7 @@ all_train_f1s, all_val_f1s = [], []
 all_train_precisions, all_val_precisions = [],[]
 all_train_recalls, all_val_recalls = [],[]
 
-early_stopper = EarlyStopper(patience=5, min_delta=100)
+early_stopper = EarlyStopper(patience=5, min_delta=5)
 
 # -----------------------------
 # Helper function: run one epoch
@@ -85,16 +86,21 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True, scheduler=No
         if train:
             loss.backward()
             optimizer.step()
-        elif scheduler:
-            scheduler.step()
 
         epoch_loss += loss.item()
         all_preds.append(torch.sigmoid(out).detach().cpu())
         all_labels.append(y.cpu())
+    
+    if not train:
+        # print test class balance
+        counts = torch.bincount(torch.cat(all_labels).flatten().int())
+        print("Validation/Test Set Counts:", counts)
 
     avg_loss = epoch_loss / len(loader)
     all_preds_tensor = torch.cat(all_preds).numpy()
-    all_labels_tensor = torch.cat(all_labels).numpy()
+    # convert logits to labels
+    all_preds_tensor = torch.tensor(all_preds_tensor > 0.5).int()
+    all_labels_tensor = torch.cat(all_labels).int()
 
     # Handle single-class case
     if len(np.unique(all_labels_tensor)) > 1:
@@ -104,8 +110,8 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True, scheduler=No
     f1 = f1_score(all_labels_tensor, all_preds_tensor > 0.5, zero_division=0)
 
     # just doing this quick fix bc im tired
-    all_preds_tensor = torch.from_numpy(all_preds_tensor)
-    all_labels_tensor = torch.from_numpy(all_labels_tensor)
+    # all_preds_tensor = torch.from_numpy(all_preds_tensor)
+    # all_labels_tensor = torch.from_numpy(all_labels_tensor)
     cm_metric = confusion_matrix.BinaryConfusionMatrix()
     cm_metric.update(all_preds_tensor, all_labels_tensor)
 
@@ -152,13 +158,13 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     attn_kwargs = {'dropout': 0.5}
     model = GPS(
         in_dim=dataset.num_node_features,
-        channels=64,
-        pe_dim=10,
-        num_layers=3,
+        channels=100,
+        pe_dim=50,
+        num_layers=4,
         attn_type='performer',
         attn_kwargs=attn_kwargs,
         return_repr=False,
-        dropout=0.5
+        dropout=0.2
     ).to(device)
 
     all_labels = []
@@ -169,12 +175,15 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
 
     num_pos = (y_train == 1).sum()
     num_neg = (y_train == 0).sum()
-    logger.info(f"Class ratio: Pos: {num_pos}, Neg: {num_neg}")
+    # logger.info(f"Class ratio: Pos: {num_pos}, Neg: {num_neg}")
     print(f"Class ratio: Pos: {num_pos}, Neg: {num_neg}")
-    pos_weight = torch.tensor([num_neg/num_pos], dtype=torch.float32).to(device)
+    weight = (num_neg / (num_pos)) # weight is hyperparam
+    pos_weight = torch.tensor([weight], dtype=torch.float32).to(device)
+    # specificity
 
     # criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     criterion = nn.BCELoss()
+    # criterion = FocalLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-5)
 
@@ -209,8 +218,8 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
               f"Val Loss: {val_loss:.4f}, AUROC: {val_auroc:.4f}, F1: {val_f1:.4f}, Precision: {val_precision:.4f}, Recall: {val_recall:.4f}")
 
         print(val_cm)
-        # TP FP
-        # FN TN
+        # TN FP
+        # FN TP
 
         # see line 218 of confusion_matrix.py
 

@@ -162,8 +162,11 @@ def patch_img(image_directory="Image",
         os.path.join(root, f)
         for root, _, files in os.walk(image_directory)
         for f in files
-        if f.lower().endswith((".png"))
+        if f.lower().endswith((".jpeg"))
     ]
+
+    if len(img_files) == 0:
+        raise ValueError("check slide file collection code, including file suffix")
     
     for img_path in tqdm(img_files, desc="Loading images"):
         try:
@@ -221,14 +224,16 @@ def patch_img(image_directory="Image",
 
 if __name__ == "__main__":
     # download wsis
-    load_wsi2fast("Data", "new_metadata.csv")
+    # load_wsi2fast("Data", "new_metadata.csv")
 
     # patch images
-    patch_img()
+    # print("PATCHING")
+    # patch_img()
 
     # graph construction
     from graphbuildertransform import build_graphs_seq
 
-    build_graphs_seq(replace=False)
+    print("BUILDING GRAPHS")
+    build_graphs_seq(replace=True)
 
     pass

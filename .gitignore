@@ -21,3 +21,4 @@ Plots
 Image
 dinov2_patches_seq
 GraphDatasetSeq
+*.ipynb

@@ -15,6 +15,8 @@ import torch_geometric.transforms as T
 from sklearn.neighbors import KDTree # for edge construction within L2 dist threshold of patch centers
 from tqdm import tqdm
 import torch.nn.functional as F
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 # umap
 import umap
@@ -187,6 +189,7 @@ def build_graphs(patch_dir = "dinov2_patches", save_dir="GraphDataset", metadata
 def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq", metadata_path = "Data/new_metadata.csv", save_graph = True, replace = True):
     os.makedirs(save_dir, exist_ok=True)
     all_graphs = []
+    patch_dir_uppers = []
     metadata_df = pd.read_csv(metadata_path, index_col=0).set_index('svs_name')
     
     # TODO: replace with process pool executor
@@ -209,6 +212,8 @@ def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq
 
         if wsi_patch_dir_upper not in metadata_df.index:
             logger.error(f'Could not locate in DF:: {wsi_patch_dir_upper}')
+            continue
+        
         wsi_metadata = metadata_df.loc[wsi_patch_dir_upper]
         label = wsi_metadata['Oncotype DX Breast Recurrence Score']
 
@@ -246,9 +251,9 @@ def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq
         reducer = umap.UMAP(
             n_neighbors=15,
             min_dist=0.1,
-            n_components=10, # output dim
+            n_components=50, # output dim
             metric='euclidean',
-            init="random", # idk if this is bad, but is a bypass for a spectral scipy.linalg.eigh issue for compute eigenpairs on spare matrix
+            init="random", # idk if this is bad, but is a bypass for a spectral scipy.linalg.eigh issue for compute eigenpairs on sparse matrix
             random_state=42 #reproducability
         )
         embeddings_low_dim = torch.from_numpy(reducer.fit_transform(embeddings_high_dim))
@@ -258,18 +263,22 @@ def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq
         # print(patch_centers)
         pos = torch.tensor(patch_centers, dtype=torch.float)
 
-        print(pos.shape)
+        # print(pos.shape)
 
         # TODO: neighbor edge_index construction by immediate 8-neighbor adjacency
         edge_index = create_8_neighbor_edge_index(patch_center_indices)
         # TODO: edge weights by cosine similarity of neighbors
         src, dst = edge_index
-        patches_tensor = torch.stack(patch_arrays).double()  # shape [N, 3, H, W]
+        patches_tensor = embeddings_low_dim.double()  # shape [N, 3, H, W]
         patches_flat = patches_tensor.flatten(start_dim=1)   # shape [N, 3*H*W]
 
-        edge_weight = F.cosine_similarity(
+        # print(2, patches_flat.shape)
+
+        edge_weight = F.softmax(F.cosine_similarity(
             patches_flat[src], patches_flat[dst], dim=1
-        )
+        ))
+
+        # print(3)
 
         wsi_graph_directed = Data(
             x=x,
@@ -288,12 +297,13 @@ def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq
 
         # replaced slide_name with wsi_patch_dir_upper
         if save_graph:
-            torch.save(wsi_graph_directed, graph_save_name)
+            torch.save(wsi_graph_undirected, graph_save_name)
             logger.debug(f"Saved graph: graphtransformerseq_{wsi_patch_dir_upper}.pt")
         
         # Not sure if we want this or just load from dir
         # seems like we are just load from dir so will prob rm this later - Alex
         all_graphs.append(wsi_graph_undirected)
+        patch_dir_uppers.append(wsi_patch_dir_upper)
 
         # WE NEED CONSISTENT SHAPE IN X.dim and there pe.dim
         # TODO: create projection to project all dimensions into common dimensionality
@@ -309,13 +319,121 @@ def build_graphs_seq(patch_dir = "dinov2_patches_seq", save_dir="GraphDatasetSeq
                 t = torch.cat([t, padding], dim=1)
             return t
 
-        # apply
-        for g in all_graphs:
-            g.x = pad_tensor(g.x, max_x_dim)
-            g.pe = pad_tensor(g.pe, max_pe_dim) 
-            print("OK", g.pe.shape)
+    # apply post-proprocessing
+    # too lazy to write load from path code, so this only processes graphs in current call
+    for g, wsi_patch_dir_upper in tqdm(zip(all_graphs, patch_dir_uppers)):
+        g.x = pad_tensor(g.x, max_x_dim)
+        g.pe = pad_tensor(g.pe, max_pe_dim) 
+        print("OK", g.pe.shape)
+
+        if save_graph:
+            torch.save(wsi_graph_undirected, graph_save_name)
+            logger.debug(f"Saved graph: graphtransformerseq_{wsi_patch_dir_upper}.pt")
                 
     return all_graphs
+
+def plot_embeddings_umap(patch_dir = "dinov2_patches_seq", metadata_path = "Data/new_metadata.csv", save_dir = "Plots"):
+    # copied most of below from build_graphs_seq
+    metadata_df = pd.read_csv(metadata_path, index_col=0).set_index('svs_name')
+    embeddings = []
+    labels = []
+
+    for wsi_patch_dir in tqdm(os.listdir(patch_dir)):
+        fpath = osp.join(patch_dir, wsi_patch_dir)
+        if osp.isfile(fpath):
+            continue
+
+        # wsi detected (dir), build graph based on patches
+
+        wsi_patch_dir_upper = wsi_patch_dir.upper()
+
+        if wsi_patch_dir_upper not in metadata_df.index:
+            logger.error(f'Could not locate in DF:: {wsi_patch_dir_upper}')
+            continue
+        
+        wsi_metadata = metadata_df.loc[wsi_patch_dir_upper]
+        label = wsi_metadata['Oncotype DX Breast Recurrence Score']
+        print(label)
+
+        patch_arrays = []
+        patch_centers = []
+        patch_center_indices = {}
+        patch_idx = 0
+        for patch_file in os.listdir(fpath):
+            # THIS IS HARDCODED. MUST MATCH FORMAT
+            params = patch_file.removeprefix('patch_').removesuffix('.png').split("_")
+            wsi_id, x_pos, y_pos = params
+            x_pos, y_pos = int(x_pos), int(y_pos)
+            patch_centers.append((x_pos, y_pos))
+            patch_center_indices[(x_pos, y_pos)] = patch_idx #indexer for edge_index construction
+            patch_idx += 1
+            # logger.info(params)
+
+            # migrated logic from graphbuilder.py - build_graphs_from_loader
+            img = Image.open(osp.join(fpath, patch_file)).convert("RGB")               # ensure RGB
+            img = img.resize((PATCH_SIZE, PATCH_SIZE), Image.Resampling.LANCZOS)  # resize to multiple of 14
+            patch_tensor = torch.tensor(np.array(img).transpose(2,0,1), dtype=torch.float)/255.0
+            patch_arrays.append(patch_tensor)
+        
+        if len(patch_arrays) == 0:
+            print(f"COULD NOT FIND PATCHES FOR {wsi_patch_dir}")
+            continue
+        
+        # dinov2 patch embeddings
+        pe = extract_patch_features(patch_arrays)
+
+        # DIMENSION REDUCTION OF DINOv2 PE - UMAP
+        # input dim - 384
+        
+        embeddings_high_dim = pe
+        reducer = umap.UMAP(
+            n_neighbors=15,
+            min_dist=0.1,
+            n_components=2, # for cartesian plotting
+            metric='euclidean',
+            init="random", # idk if this is bad, but is a bypass for a spectral scipy.linalg.eigh issue for compute eigenpairs on sparse matrix
+            random_state=42 #reproducability
+        )
+
+        embeddings_low_dim = torch.from_numpy(reducer.fit_transform(embeddings_high_dim))
+        embeddings.append(embeddings_low_dim)
+        labels.append(label)
+
+    if len(embeddings) == 0:
+        print("No embeddings found. Exiting...")
+        return
+
+    # Concatenate embeddings across WSIs
+    all_embeddings = torch.cat(embeddings, dim=0)
+    all_labels = np.array([lbl for lbl, emb in zip(labels, embeddings) for _ in range(len(emb))])
+
+    df_plot = pd.DataFrame({
+        "UMAP_1": all_embeddings[:,0].numpy(),
+        "UMAP_2": all_embeddings[:,1].numpy(),
+        "Label": all_labels
+    })
+
+    plt.figure(figsize=(10, 8))
+    scatter = sns.scatterplot(
+        data=df_plot,
+        x="UMAP_1",
+        y="UMAP_2",
+        hue="Label",
+        palette="viridis",
+        s=5,
+        alpha=0.8,
+        edgecolor=None
+    )
+    plt.title("UMAP of DINOv2 Patch Embeddings (Colored by Oncotype DX Score)")
+    plt.legend(title="Oncotype DX score", bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+
+    # Save
+    os.makedirs(save_dir, exist_ok=True)
+    plt.savefig(os.path.join(save_dir, "umap_dinov2_embeddings.png"), dpi=300)
+    plt.close()
+
+    print("Saved: ", os.path.join(save_dir, "umap_dinov2_embeddings.png"))
 
 
 def create_8_neighbor_edge_index(node_idx: dict):
@@ -366,4 +484,5 @@ if __name__ == "__main__":
     # build graphs directly
     # designed to be self-contained so just run this on dinov2_patches
     # build_graphs()
-    build_graphs_seq(replace=True)
+    # build_graphs_seq(replace=True)
+    plot_embeddings_umap()
