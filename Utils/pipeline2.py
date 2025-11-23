@@ -12,6 +12,7 @@ import numpy as np
 import cv2
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
+from torchvision import transforms
 
 logger = logging.Logger("ppl2", level=logging.INFO)
 log_file = 'Logs/ppl2.log'
@@ -209,8 +210,15 @@ def patch_img(image_directory="Image",
                 if tissue_ratio < tissue_threshold:
                     continue
 
+                # apply DINOv2 transforms to prep for PE
+                # apply imagenet transforms. This is what's applied to images for DINOv2
+                patch_pil = transform(patch_pil).cpu().numpy()
+                # transformed_img is (C, H, W). Transpose to (H, W, C) for cv2
+                patch_pil = np.transpose(patch_pil, (1,2,0))
+                
                 # Save patch
                 patch_pil = Image.fromarray(patch_np)
+
                 patch_filename = f"patch_{patch_count}_{x}_{y}.png"
                 patch_pil.save(os.path.join(slide_dir, patch_filename))
                 patch_count += 1

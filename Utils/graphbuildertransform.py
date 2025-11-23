@@ -17,6 +17,9 @@ from tqdm import tqdm
 import torch.nn.functional as F
 import seaborn as sns
 import matplotlib.pyplot as plt
+from torchvision import transforms
+
+import vit_pe_train # fine-tuned PE
 
 # umap
 import umap
@@ -34,6 +37,7 @@ logger.addHandler(file_handler)
 # DINOv2 model - this isn't getting used yet
 
 DISABLE_SSL = True
+FINE_TUNED = False
 
 if DISABLE_SSL:
     # WARNING: this can be a security vulnerability but this is to fix SSL issue with torchhub load DINOv2
@@ -42,7 +46,13 @@ if DISABLE_SSL:
     ssl._create_default_https_context = ssl._create_unverified_context
 
 dinov2_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
-dinov2_model.eval()  # set to eval mode
+
+if FINE_TUNED:
+    with torch.serialization.safe_globals([vit_pe_train.DINOv2ForBinaryClassification]):
+        state_dict = torch.load("fine-tuned-dino-S14.pt",weights_only=True)
+        dinov2_model.load_state_dict(state_dict)
+
+dinov2_model.eval()
 
 PATCH_SIZE = 28  # multiple of 14 for ViT-S/14
 
@@ -70,7 +80,21 @@ def extract_patch_features(patches):
     Batch processing for speed. Returns [num_patches, embed_dim]
     """
     # stack all patches into a single tensor: [B, C, H, W]
+    
     patch_tensor = torch.stack(patches)  # already [C,H,W] from preprocessing
+
+    transform = transforms.Compose([
+        # transforms.Resize(256), 
+        # transforms.CenterCrop(224),
+        # transforms.ToTensor(),
+        transforms.Normalize( # ImageNet norm stats
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        ),
+    ])
+    # Note: this outputs in (C, H, W) rather than (H, W, C) which matters for cv2
+    # Assume it shouldn't break things here?
+    patch_tensor = transform(patch_tensor)
 
     with torch.no_grad():
         out = dinov2_model.get_intermediate_layers(patch_tensor)[0]  # [B, num_tokens, dim]

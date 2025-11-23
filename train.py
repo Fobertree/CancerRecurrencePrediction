@@ -55,7 +55,7 @@ all_train_f1s, all_val_f1s = [], []
 all_train_precisions, all_val_precisions = [],[]
 all_train_recalls, all_val_recalls = [],[]
 
-early_stopper = EarlyStopper(patience=5, min_delta=5)
+early_stopper = EarlyStopper(patience=5, min_delta=5000) # disable temp bc this bricks np.nanmean due to inhomog arr
 
 # -----------------------------
 # Helper function: run one epoch
@@ -160,7 +160,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
         in_dim=dataset.num_node_features,
         channels=100,
         pe_dim=50,
-        num_layers=4,
+        num_layers=2,
         attn_type='performer',
         attn_kwargs=attn_kwargs,
         return_repr=False,
