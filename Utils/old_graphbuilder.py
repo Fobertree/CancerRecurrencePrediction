@@ -1,178 +1,107 @@
 import torch
-import torch.nn as nn
-import numpy as np
 from torch_geometric.data import Data
-from torch_geometric.nn import knn_graph
-from torch_geometric.transforms import KNNGraph
+import numpy as np
 
-from scipy.spatial import KDTree
-from sklearn.metrics.pairwise import cosine_similarity
+def _to_tensor(x, dtype=torch.float32, device=None):
+    if isinstance(x, torch.Tensor):
+        t = x.to(device) if device is not None else x
+    else:
+        try:
+            import numpy as _np
+            t = torch.tensor(x, dtype=dtype, device=device)
+        except Exception:
+            t = torch.as_tensor(x, dtype=dtype, device=device)
+    return t
 
-import os
+def _knn_edge_index_from_numpy(x_np, k):
+    """
+    Build edge_index (2, N*k) from numpy array x_np using sklearn NearestNeighbors.
+    Returns a torch.LongTensor on CPU (we'll move to device later).
+    """
+    try:
+        from sklearn.neighbors import NearestNeighbors
+    except Exception as e:
+        raise RuntimeError("scikit-learn is required for the fallback KNN. Install it with `pip install scikit-learn`.") from e
 
-from wsi import load_wsi # load as np arrays
+    # set n_neighbors = k+1 to include self, then drop self
+    n_neighbors = min(k + 1, x_np.shape[0])
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='auto', metric='euclidean').fit(x_np)
+    distances, indices = nbrs.kneighbors(x_np)  # indices: (N, n_neighbors)
+    # drop the first column which is the point itself (if present)
+    if indices.shape[1] > 1:
+        knn = indices[:, 1:n_neighbors]  # (N, k) or fewer if small N
+    else:
+        knn = np.zeros((x_np.shape[0], 0), dtype=np.int64)
+    N = x_np.shape[0]
+    if knn.size == 0:
+        # no neighbors (e.g., N==1), return empty edge_index
+        return torch.empty((2, 0), dtype=torch.long)
+    src = np.repeat(np.arange(N), knn.shape[1])
+    dst = knn.reshape(-1)
+    edge_index = np.stack([src, dst], axis=0).astype(np.int64)  # (2, N*k)
+    return torch.from_numpy(edge_index)
 
-# dinov2_vits14 is one specific model undero dinov2. Use this for now
-dinov2_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
-dinov3_model = torch.hub.load("dinov3")
+def build_sim_graph(x, y=None, k: int = 5):
+    """
+    Build a similarity graph (k-NN) from node feature vectors `x`.
+    Returns a torch_geometric.data.Data object with fields:
+      - x: node features (Tensor[N, F])
+      - edge_index: long Tensor[2, E]
+      - y: optional node labels (kept as-is if provided)
+    """
+    x = _to_tensor(x, dtype=torch.float32)
+    if x.dim() == 1:
+        x = x.unsqueeze(-1)
+    num_nodes = x.shape[0]
+    if num_nodes == 0:
+        raise ValueError("build_sim_graph received empty x")
 
-def load_patches(path: str):
-    '''
-    TODO: implement this
-    
-    loads saved subpatches generated from wsi.py (assuming DINOv2 on the raw WSI is too expensive, we can do some run attempts on this)
-    
-    '''
-    # TODO: have load_wsi return labels as well @thomas
-    loaded_wsi_patches, centers = load_wsi(path, threshold=1) # load at most threshold WSI
+    # Prefer torch_geometric.knn_graph if available (requires torch-cluster)
+    try:
+        from torch_geometric.nn import knn_graph
+        edge_index = knn_graph(x, k=k, batch=None, loop=False)
+    except Exception:
+        # Fallback: use sklearn NearestNeighbors (memory-efficient)
+        x_np = x.cpu().numpy()
+        edge_index = _knn_edge_index_from_numpy(x_np, k).to(x.device)
 
-    # build graphs
-    for single_wsi_patches in loaded_wsi_patches:
-        data_spat, data_sem = patch_to_graph(single_wsi_patches, patch_centers=centers)
-        # TODO: separate above function call, deprecate in favor of v2 rewrites
-        
-    
-    # segmentation + embedding
-
-    pass
-
-def patch_to_graph(wsi_patches: list[np.ndarray | torch.Tensor], 
-                   patch_centers: list[tuple[float,float]],
-                   slide_label: int,
-                   spatial_radius: float = 512, # pixel radius
-                   sim_threshold: float = 0.8,
-                   save_data = True):
-    features = []
-    dinov2_model.eval() # evaluation mode
-
-    with torch.no_grad():
-        # alternative: ResNet. DINOv2 is ViT-based
-        for patch in wsi_patches:
-            patch_features = dinov2_model.get_intermediate_layers(patch)[0]
-            patch_features = patch_features.squeeze(0)
-            # rm CLS token
-            patch_features = patch_features[1:]
-            # NOTE: not sure if should collapse this into an aggregated patch feature
-            agg_patch_feature = patch_features.mean(dim=0)
-            features.append(agg_patch_feature)
-    
-    num_patches = patch_features.shape[0]
-    # [num_patches, embed_dim]
-    x = torch.stack(features)
-
-    # build edges
-    # spatial similarity - KDTree
-    # NOTE: if we want to augment the data via scaling or rotation, we need to switch to centers
-    # since they are scale+rotation-invariant. Otherwise fine
-    kd_tree = KDTree(patch_centers) # use upper-left patch corners from openslide
-    pairs = kd_tree.query_pairs(spatial_radius)
-    edge_index_spat = torch.tensor(list(pairs), dtype=torch.long).t().contiguous()
-    
-    # feature similarity - Cosine similarity
-    K = 8
-    sim = cosine_similarity(x.numpy())
-    np.fill_diagonal(sim, -np.inf)  # exclude self-similarity
-
-    topk_indices = np.argsort(sim, axis=1)[:, -K:]
-    rows = np.repeat(np.arange(sim.shape[0]), K)
-    cols = topk_indices.flatten()
-
-    edge_index_sem = torch.tensor([rows, cols], dtype=torch.long)
-
-    edge_index = knn_graph(x, k=K, loop=False, flow='target_to_source', cosine=True)
-
-    # load labels
-    y = torch.tensor([slide_label], dtype=torch.long) # TODO: fit labels
-
-    # Not sure if I should make these in-memory datasets - Alex
-    data_spat= Data(x=x, edge_index=edge_index_spat,y=y)
-    data_sem = Data(x=x, edge_index=edge_index_sem,y=y)
-
-    combined_x = torch.concat([data_spat, data_sem], dim=0)
-    combined_x_edge_index = torch.concat([edge_index_spat, edge_index_sem], dim=0)
-    combined_data = Data(x= combined_x, edge_index=combined_x_edge_index,y=y)
-
-    if save_data:
-        os.mkdir("GraphDataset", exist=True)
-        torch.save(data_spat, os.path.join("GraphDataset", "data_spat.pt"))
-        torch.save(data_sem, os.path.join("GraphDataset", "data_sem.pt"))
-        torch.save(combined_data, os.path.join("GraphDataset", "combined_data.pt"))
-
-    return data_spat, data_sem
-
-'''
-Rewrites v2
-'''
-def preprocess_patches_for_graphs(wsi_patches: list[np.ndarray | torch.Tensor], 
-                   patch_centers: list[tuple[float,float]],
-                   slide_labels: torch.Tensor, 
-                   spatial_k,       # KNN
-                   sim_k,           # KNN
-                   save_data = True):
-    features = []
-    dinov2_model.eval() # evaluation mode
-
-    with torch.no_grad():
-        # alternative: ResNet. DINOv2 is ViT-based
-        for patch in wsi_patches:
-            patch_features = dinov2_model.get_intermediate_layers(patch)[0]
-            patch_features = patch_features.squeeze(0)
-            # rm CLS token
-            patch_features = patch_features[1:]
-            # NOTE: not sure if should collapse this into an aggregated patch feature
-            agg_patch_feature = patch_features.mean(dim=0)
-            features.append(agg_patch_feature)
-    
-    # num_patches = patch_features.shape[0]
-    # [num_patches, embed_dim]
-    x = torch.stack(features)
-
-    return x
-
-
-def build_spatial_graph(
-                   x,
-                   patch_centers: list[tuple[float,float]],
-                   slide_labels: list[int],
-                   spatial_radius: float = 512, # pixel radius
-                   ):
-    '''
-    Takes patches from one WSI only for now
-    '''
-    y = torch.tensor([slide_labels], dtype=torch.long)
-    kd_tree = KDTree(patch_centers) # use upper-left patch corners from openslide
-    pairs = kd_tree.query_pairs(spatial_radius)
-    edge_index_spat = torch.tensor(list(pairs), dtype=torch.long).t().contiguous()
-    data_spat= Data(x=x, edge_index=edge_index_spat,y=y)
-    return data_spat
-
-
-# cur graph building
-def build_sim_graph(
-        x, #patches
-        y, # labels
-        k=5 # knn
-):
-    edge_index = knn_graph(x, k=k, loop=False, flow='target_to_source', cosine=True)
-    data = Data(x=x,edge_index=edge_index, y=y)
-
+    data = Data(x=x, edge_index=edge_index)
+    if y is not None:
+        data.y = _to_tensor(y, dtype=torch.long)
     return data
 
-def build_spat_graph(
-        patch_centers : torch.tensor, # patch centers [num_patches, 2]
-        x: torch.Tensor,              # [num_patches, feature_dim]
-        y, #patch labels
-        k=4
-):
-    data = Data(x=x, pos=patch_centers, y=y)
-    transform = KNNGraph(k=k, loop=False)
-    # transform should build out graph edges
-    data = transform(data)
+def build_spat_graph(patch_centers, x_features=None, y=None, k: int = 4):
+    """
+    Build a spatial graph (k-NN) from patch_centers (coordinates).
+    - patch_centers: array-like or Tensor of shape (N, D) (D typically 2 or 3)
+    - x_features: optional node features to attach as data.x; if None, patch_centers used as features
+    - y: optional node labels
+    - k: number of neighbors for k-NN
+    Returns: torch_geometric.data.Data
+    """
+    coords = _to_tensor(patch_centers, dtype=torch.float32)
+    if coords.dim() == 1:
+        coords = coords.unsqueeze(-1)
+    num_nodes = coords.shape[0]
+    if num_nodes == 0:
+        raise ValueError("build_spat_graph received empty patch_centers")
+
+    try:
+        from torch_geometric.nn import knn_graph
+        edge_index = knn_graph(coords, k=k, batch=None, loop=False)
+    except Exception:
+        coords_np = coords.cpu().numpy()
+        edge_index = _knn_edge_index_from_numpy(coords_np, k).to(coords.device)
+
+    # choose node features
+    if x_features is None:
+        x = coords
+    else:
+        x = _to_tensor(x_features, dtype=torch.float32)
+        if x.dim() == 1:
+            x = x.unsqueeze(-1)
+
+    data = Data(x=x, edge_index=edge_index)
+    if y is not None:
+        data.y = _to_tensor(y, dtype=torch.long)
     return data
-
-if __name__ == "__main__":
-    # testing
-    images = load_patches("Data", threshold=1)
-    img : np.ndarray = images[0]
-
-    

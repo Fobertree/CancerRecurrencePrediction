@@ -53,7 +53,7 @@ class CancerRecurrenceGraphDataset(InMemoryDataset):
         """
         Read saved graphs from root directory, attach labels, and filter/transform if needed.
         """
-        label_csv = "data/new_metadata.csv"
+        label_csv = "new_metadata(in).csv"
         if not os.path.exists(label_csv):
             raise FileNotFoundError(f"Missing label file: {label_csv}")
         

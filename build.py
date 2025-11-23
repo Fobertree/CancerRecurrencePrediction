@@ -2,7 +2,7 @@ from Utils.wsi import load_wsi
 
 # Path to raw WSI files
 wsi_dir = "data"
-metadata_path = "data/new_metadata.csv"
+metadata_path = "data/new_metadata(in).csv"
 output_patch_dir = "dinov2_patches"
 
 # patching
