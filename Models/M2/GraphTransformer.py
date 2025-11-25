@@ -42,28 +42,27 @@ class GPS(torch.nn.Module):
         # Optional edge projection
         self.edge_lin = Linear(1, channels)  # adjust edge feature dim if known
 
-        # @Thomas, Akhil should I replace this basic MLP with a residual block?
         self.convs = ModuleList()
         for _ in range(num_layers):
             mlp = Sequential(
                 Linear(channels, channels),
+                nn.BatchNorm1d(channels),
                 nn.Dropout(dropout),
                 ReLU(),
                 Linear(channels, channels),
             )
-            conv = GPSConv(channels, GINEConv(mlp), heads=4,
+            conv = GPSConv(channels, GINEConv(mlp), heads=5,
                            attn_type=attn_type, attn_kwargs=attn_kwargs)
             self.convs.append(conv)
 
         self.mlp = Sequential(
             Linear(channels, channels // 2),
             Dropout(dropout),
-            ReLU(),
+            nn.ReLU(),
             Linear(channels // 2, channels // 4),
             Dropout(dropout),
-            ReLU(),
+            nn.ReLU(),
             Linear(channels // 4, 1),
-            nn.Sigmoid()
         )
 
         for m in self.mlp:

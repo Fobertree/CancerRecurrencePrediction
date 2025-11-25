@@ -16,6 +16,10 @@ import os
 import time
 from Utils.earlystopper import EarlyStopper
 from Utils.focalloss import FocalLoss
+from Utils.plot_logits import *
+from tqdm import tqdm
+
+from Models.M2.main import ImageBlock, HELP
 
 logger = logging.Logger("train", level=logging.DEBUG)
 log_file = 'Logs/train.log'
@@ -31,8 +35,8 @@ graph_save_dir = "GraphDatasetSeq"
 k_folds = 5
 num_epochs = 30
 batch_size = 8 # low batch size to regularize
-learning_rate = 1e-4
-weight_decay = 1e-7 # L2 regularization param for Adam
+learning_rate = 1e-3
+weight_decay = 1e-6 # L2 regularization param for Adam
 
 # -----------------------------
 # Load dataset
@@ -69,7 +73,7 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True, scheduler=No
     epoch_loss = 0.0
     all_preds, all_labels = [], []
 
-    for batch in loader:
+    for batch in tqdm(loader, desc=f"Epoch Progress: {"train" if train else "val"}"):
         batch = batch.to(device)
         if train:
             optimizer.zero_grad()
@@ -80,7 +84,9 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True, scheduler=No
 
         # print(batch)
         out = model(batch).squeeze().view(-1, 1)
+        out = torch.sigmoid(out)
         y = batch.y.float().view(-1, 1)
+        plot_logits(out, y.flatten().cpu().numpy()) # uncomment to debug
 
         loss = criterion(out, y)
         if train:
@@ -88,7 +94,7 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True, scheduler=No
             optimizer.step()
 
         epoch_loss += loss.item()
-        all_preds.append(torch.sigmoid(out).detach().cpu())
+        all_preds.append(out.detach().cpu())
         all_labels.append(y.cpu())
     
     if not train:
@@ -107,7 +113,7 @@ def run_epoch(loader, model, criterion, optimizer=None, train=True, scheduler=No
         auroc = roc_auc_score(all_labels_tensor, all_preds_tensor)
     else:
         auroc = np.nan
-    f1 = f1_score(all_labels_tensor, all_preds_tensor > 0.5, zero_division=0)
+    f1 = f1_score(all_labels_tensor, all_preds_tensor, zero_division=0)
 
     # just doing this quick fix bc im tired
     # all_preds_tensor = torch.from_numpy(all_preds_tensor)
@@ -152,20 +158,41 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
         replacement=True
     )
 
-    train_loader = DataLoader(train_subset, batch_size=batch_size, sampler=sampler, shuffle=False)
-    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+    # train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=False, sampler=sampler, drop_last=True)
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=False, drop_last=True)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, drop_last=True)
 
     attn_kwargs = {'dropout': 0.5}
-    model = GPS(
-        in_dim=dataset.num_node_features,
-        channels=100,
+    # model = GPS(
+    #     in_dim=dataset.num_node_features,
+    #     channels=100,
+    #     pe_dim=50,
+    #     num_layers=2,
+    #     attn_type='performer',
+    #     attn_kwargs=attn_kwargs,
+    #     return_repr=False,
+    #     dropout=0.2
+    # ).to(device)
+
+    model = ImageBlock(
+        in_channels=50, 
+        pe_dim = 50, 
+        num_layers=2,
+        hidden_channels=20, #hidden channels * num_head = in_channel + pe_dim
+        num_heads=2,
+        # ratio=
+        # attn_type='performer', 
+        # attn_kwards=attn_kwargs, 
+        # return_repr=False
+    ).to(device)
+
+    model = HELP(
+        graph_in_dim=100,
         pe_dim=50,
         num_layers=2,
-        attn_type='performer',
-        attn_kwargs=attn_kwargs,
-        return_repr=False,
-        dropout=0.2
-    ).to(device)
+        hidden_channels=50,
+        num_heads=2
+    )
 
     all_labels = []
     for batch in train_loader:
@@ -177,12 +204,12 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     num_neg = (y_train == 0).sum()
     # logger.info(f"Class ratio: Pos: {num_pos}, Neg: {num_neg}")
     print(f"Class ratio: Pos: {num_pos}, Neg: {num_neg}")
-    weight = (num_neg / (num_pos)) # weight is hyperparam
+    weight = ((num_neg * 3) / (num_pos)) # weight is hyperparam
     pos_weight = torch.tensor([weight], dtype=torch.float32).to(device)
     # specificity
 
-    # criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    criterion = nn.BCELoss()
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    # criterion = nn.BCELoss()
     # criterion = FocalLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-5)
@@ -193,7 +220,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(dataset, dataset.y)):
     fold_train_precisions, fold_val_precisions = [],[]
     fold_train_recalls, fold_val_recalls = [],[]
 
-    for epoch in range(1, num_epochs + 1):
+    for epoch in tqdm(range(1, num_epochs + 1), desc="Epoch"):
         train_loss, train_auroc, train_f1, train_cm, train_precision, train_recall = run_epoch(train_loader, model, criterion, optimizer, train=True)
         val_loss, val_auroc, val_f1, val_cm, val_precision, val_recall = run_epoch(val_loader, model, criterion, train=False)
         # logger.info(f"Confusion Matrix: {str(val_cm)}")

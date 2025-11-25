@@ -17,5 +17,4 @@ Training and testing in `train.py`
 
 ``du -sh *``
 
-For Alex: Last one: 3
-- Next one 4
+pip install pyg-lib -f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html

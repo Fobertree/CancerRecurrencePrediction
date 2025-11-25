@@ -12,6 +12,8 @@ from NaiveMLP import NaiveMLP
 from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
 
+import joblib
+
 # replace this with your metadata path
 METADATA_PATH = "/Users/alexanderliu/EmoryCS/CancerRecurrencePrediction/new_metadata.csv"
 
@@ -96,6 +98,9 @@ if __name__ == "__main__":
     pred_labels = (preds >= 0.5).astype(int)
     # y_true = y_test.numpy().flatten()
     y_true = np.array(y_test)
+
+    # save model
+    joblib.dump(clf, "xgb.pkl")
 
     f1 = f1_score(y_true, pred_labels)
     auc = roc_auc_score(y_true, preds)

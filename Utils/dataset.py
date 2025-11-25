@@ -7,6 +7,7 @@ import os
 import torch
 from torch_geometric.data import InMemoryDataset, Data
 import pandas as pd
+from sklearn.preprocessing import KBinsDiscretizer
 
 # --- Safe unpickling for PyTorch ≥ 2.6 ---
 if hasattr(torch.serialization, "add_safe_globals"):
@@ -32,6 +33,8 @@ class CancerRecurrenceGraphDataset(InMemoryDataset):
 
         # Load all graphs
         if not os.path.exists(self.processed_paths[0]):
+            # WARNING THIS IS DANGEROUS
+            # If we change pipeline it won't run unless we delete processed folder
             self.process()  # process if not already done
         self.data, self.slices = torch.load(self.processed_paths[0], map_location="cpu", weights_only=False)
 
@@ -62,8 +65,14 @@ class CancerRecurrenceGraphDataset(InMemoryDataset):
         labels_df = pd.read_csv(label_csv)
         print(f"Loaded {len(labels_df)} labels from metadata")
 
+        X_df = load_metadata_features(labels_df)
+        print(X_df)
+
         # Convert to dict for fast lookup (e.g., {slide_id: label})
         label_dict = dict(zip(labels_df["svs_name"], labels_df["Oncotype DX Breast Recurrence Score"]))
+        X_dict = dict(zip(labels_df["svs_name"], X_df.values))
+
+        print(X_dict)
 
         graph_files = [
             f for f in os.listdir(self.root)
@@ -84,6 +93,9 @@ class CancerRecurrenceGraphDataset(InMemoryDataset):
 
             data.y = torch.tensor([int(label_dict[slide_id])], dtype=torch.long)
 
+            # metadata features
+            data.metadata = torch.tensor([X_dict[slide_id]], dtype=torch.float)
+
             if self.pre_filter is not None and not self.pre_filter(data):
                 continue
             if self.pre_transform is not None:
@@ -98,3 +110,26 @@ class CancerRecurrenceGraphDataset(InMemoryDataset):
         data, slices = self.collate(data_list)
         torch.save((data, slices), self.processed_paths[0])
 
+def load_metadata_features(df):
+    # drop first to prevent multicollinearity
+    df = pd.get_dummies(df, columns=["HistologicType"], drop_first=True)
+
+    continuous_cols = ['Age', 'TumorSize']
+
+    # Initialize KBinsDiscretizer for 4 bins using 'quantile' strategy and 'ordinal' encoding
+    n_bins = 4
+    discretizer = KBinsDiscretizer(n_bins=n_bins, encode='ordinal', strategy='quantile')
+
+    # Apply discretization to the selected columns
+    df_discretized_values = discretizer.fit_transform(df[continuous_cols])
+
+    # Create a new DataFrame with the discretized columns
+    df_discretized = pd.DataFrame(df_discretized_values, columns=[col + '_binned' for col in continuous_cols])
+
+    # Combine with original non-discretized columns (e.g., categorical_col)
+    df = pd.concat([df.drop(columns=continuous_cols), df_discretized], axis=1)
+
+    X_cols = [col for col in df.columns if col not in ["Oncotype DX Breast Recurrence Score", "svs_name"]]
+    X_df = df[X_cols]
+
+    return X_df
